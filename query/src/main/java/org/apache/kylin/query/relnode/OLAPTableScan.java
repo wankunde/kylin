@@ -65,13 +65,15 @@ import org.apache.calcite.rel.rules.SortUnionTransposeRule;
 import org.apache.calcite.rel.type.RelDataType;
 import org.apache.calcite.rel.type.RelDataTypeFactory;
 import org.apache.calcite.rel.type.RelDataTypeField;
+import org.apache.calcite.rel.type.RelDataTypeFieldImpl;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.kylin.common.KylinConfig;
+import org.apache.kylin.common.util.StringUtil;
 import org.apache.kylin.metadata.model.ColumnDesc;
 import org.apache.kylin.metadata.model.DataModelDesc;
 import org.apache.kylin.metadata.model.TableRef;
 import org.apache.kylin.metadata.model.TblColRef;
-import org.apache.kylin.query.optrule.AggregateMultipleExpandRule;
+import org.apache.kylin.query.enumerator.DictionaryEnumerator;
 import org.apache.kylin.query.optrule.AggregateProjectReduceRule;
 import org.apache.kylin.query.optrule.OLAPAggregateRule;
 import org.apache.kylin.query.optrule.OLAPFilterRule;
@@ -88,6 +90,7 @@ import org.apache.kylin.query.schema.OLAPTable;
 
 import com.google.common.base.Function;
 import com.google.common.base.Preconditions;
+import com.google.common.collect.Lists;
 
 /**
  */
@@ -160,13 +163,11 @@ public class OLAPTableScan extends TableScan implements OLAPRel, EnumerableRel {
         planner.addRule(OLAPUnionRule.INSTANCE);
         planner.addRule(OLAPWindowRule.INSTANCE);
         planner.addRule(OLAPValuesRule.INSTANCE);
-        
-        // Support translate the grouping aggregate into union of simple aggregates
-        planner.addRule(AggregateMultipleExpandRule.INSTANCE);
+
         planner.addRule(AggregateProjectReduceRule.INSTANCE);
 
         // CalcitePrepareImpl.CONSTANT_REDUCTION_RULES
-        if(kylinConfig.isReduceExpressionsRulesEnabled()) {
+        if (kylinConfig.isReduceExpressionsRulesEnabled()) {
             planner.addRule(ReduceExpressionsRule.PROJECT_INSTANCE);
             planner.addRule(ReduceExpressionsRule.FILTER_INSTANCE);
             planner.addRule(ReduceExpressionsRule.CALC_INSTANCE);
@@ -178,7 +179,7 @@ public class OLAPTableScan extends TableScan implements OLAPRel, EnumerableRel {
         //        planner.addRule(ValuesReduceRule.PROJECT_INSTANCE);
 
         removeRules(planner, kylinConfig.getCalciteRemoveRule());
-        if(!kylinConfig.isEnumerableRulesEnabled()) {
+        if (!kylinConfig.isEnumerableRulesEnabled()) {
             for (RelOptRule rule : CalcitePrepareImpl.ENUMERABLE_RULES) {
                 planner.removeRule(rule);
             }
@@ -239,7 +240,7 @@ public class OLAPTableScan extends TableScan implements OLAPRel, EnumerableRel {
             if (StringUtils.isEmpty(rule)) {
                 continue;
             }
-            String[] split = rule.split("#");
+            String[] split = StringUtil.split(rule, "#");
             if (split.length != 2) {
                 throw new RuntimeException("Customized Rule should be in format <RuleClassName>#<FieldName>");
             }
@@ -417,6 +418,8 @@ public class OLAPTableScan extends TableScan implements OLAPRel, EnumerableRel {
         // if the table to scan is not the fact table of cube, then it's a lookup table
         if (context.realization.getModel().isLookupTable(tableName)) {
             return "executeLookupTableQuery";
+        } else if (DictionaryEnumerator.ifDictionaryEnumeratorEligible(context)) {
+            return "executeColumnDictionaryQuery";
         } else {
             return "executeOLAPQuery";
         }
@@ -438,6 +441,27 @@ public class OLAPTableScan extends TableScan implements OLAPRel, EnumerableRel {
                 RelDataType fieldType = field.getType();
                 rewriteField.setValue(fieldType);
             }
+        }
+        // add dynamic field to the table scan if join not exist
+        if (!this.context.hasJoin && !this.context.dynamicFields.isEmpty()) {
+            Map<TblColRef, RelDataType> dynFields = this.context.dynamicFields;
+            List<TblColRef> newCols = Lists.newArrayList(this.columnRowType.getAllColumns());
+            List<RelDataTypeField> newFieldList = Lists.newArrayList(this.rowType.getFieldList());
+            int paramIndex = this.rowType.getFieldList().size();
+            for (TblColRef fieldCol : dynFields.keySet()) {
+                newCols.add(fieldCol);
+
+                RelDataType fieldType = dynFields.get(fieldCol);
+                RelDataTypeField newField = new RelDataTypeFieldImpl(fieldCol.getName(), paramIndex++, fieldType);
+                newFieldList.add(newField);
+            }
+
+            // rebuild row type
+            RelDataTypeFactory.FieldInfoBuilder fieldInfo = getCluster().getTypeFactory().builder();
+            fieldInfo.addAll(newFieldList);
+            this.rowType = getCluster().getTypeFactory().createStructType(fieldInfo);
+
+            this.columnRowType = new ColumnRowType(newCols);
         }
     }
 

@@ -23,6 +23,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 
 import org.apache.kylin.common.persistence.ResourceStore;
@@ -157,7 +158,7 @@ public class TableExtDesc extends RootPersistentEntity {
 
         String[] cardi = cardinality.split(",");
 
-        if (0 == this.columnStats.size()) {
+        if (this.columnStats.isEmpty()) {
             for (int i = 0; i < cardi.length; i++) {
                 ColumnStats columnStat = new ColumnStats();
                 columnStat.setCardinality(Long.parseLong(cardi[i]));
@@ -202,7 +203,7 @@ public class TableExtDesc extends RootPersistentEntity {
         this.project = project;
 
         if (this.tableIdentity != null)
-            this.tableIdentity = this.tableIdentity.toUpperCase();
+            this.tableIdentity = this.tableIdentity.toUpperCase(Locale.ROOT);
     }
 
     public void setLastModifiedTime(long lastModifiedTime) {

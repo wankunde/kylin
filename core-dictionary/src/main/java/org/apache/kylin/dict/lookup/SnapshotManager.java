@@ -19,12 +19,14 @@
 package org.apache.kylin.dict.lookup;
 
 import java.io.IOException;
+import java.util.List;
 import java.util.NavigableSet;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 
 import org.apache.kylin.common.KylinConfig;
 import org.apache.kylin.common.persistence.ResourceStore;
+import org.apache.kylin.metadata.TableMetadataManager;
 import org.apache.kylin.metadata.model.TableDesc;
 import org.apache.kylin.source.IReadableTable;
 import org.apache.kylin.source.IReadableTable.TableSignature;
@@ -36,6 +38,9 @@ import com.google.common.cache.CacheLoader;
 import com.google.common.cache.LoadingCache;
 import com.google.common.cache.RemovalListener;
 import com.google.common.cache.RemovalNotification;
+import com.google.common.collect.Interner;
+import com.google.common.collect.Interners;
+import com.google.common.collect.Lists;
 
 /**
  * @author yangli9
@@ -65,7 +70,8 @@ public class SnapshotManager {
         this.snapshotCache = CacheBuilder.newBuilder().removalListener(new RemovalListener<String, SnapshotTable>() {
             @Override
             public void onRemoval(RemovalNotification<String, SnapshotTable> notification) {
-                SnapshotManager.logger.info("Snapshot with resource path " + notification.getKey() + " is removed due to " + notification.getCause());
+                SnapshotManager.logger.info("Snapshot with resource path {} is removed due to {}",
+                        notification.getKey(), notification.getCause());
             }
         }).maximumSize(config.getCachedSnapshotMaxEntrySize())//
                 .expireAfterWrite(1, TimeUnit.DAYS).build(new CacheLoader<String, SnapshotTable>() {
@@ -85,13 +91,30 @@ public class SnapshotManager {
         try {
             SnapshotTable r = snapshotCache.get(resourcePath);
             if (r == null) {
-                r = load(resourcePath, true);
-                snapshotCache.put(resourcePath, r);
+                r = loadAndUpdateLocalCache(resourcePath);
             }
             return r;
         } catch (ExecutionException e) {
             throw new RuntimeException(e.getCause());
         }
+    }
+
+    private SnapshotTable loadAndUpdateLocalCache(String snapshotResPath) throws IOException {
+        SnapshotTable snapshotTable = load(snapshotResPath, true);
+        snapshotCache.put(snapshotTable.getResourcePath(), snapshotTable);
+        return snapshotTable;
+    }
+
+    public List<SnapshotTable> getSnapshots(String tableName, TableSignature sourceTableSignature) throws IOException {
+        List<SnapshotTable> result = Lists.newArrayList();
+        String tableSnapshotsPath = SnapshotTable.getResourceDir(tableName);
+        ResourceStore store = TableMetadataManager.getInstance(this.config).getStore();
+        result.addAll(store.getAllResources(tableSnapshotsPath, SnapshotTableSerializer.INFO_SERIALIZER));
+        if (sourceTableSignature != null) {
+            String oldTableSnapshotsPath = SnapshotTable.getOldResourceDir(sourceTableSignature);
+            result.addAll(store.getAllResources(oldTableSnapshotsPath, SnapshotTableSerializer.INFO_SERIALIZER));
+        }
+        return result;
     }
 
     public void removeSnapshot(String resourcePath) throws IOException {
@@ -100,34 +123,34 @@ public class SnapshotManager {
         snapshotCache.invalidate(resourcePath);
     }
 
-    public SnapshotTable buildSnapshot(IReadableTable table, TableDesc tableDesc) throws IOException {
+    public SnapshotTable buildSnapshot(IReadableTable table, TableDesc tableDesc, KylinConfig cubeConfig)
+            throws IOException {
         SnapshotTable snapshot = new SnapshotTable(table, tableDesc.getIdentity());
         snapshot.updateRandomUuid();
+        Interner<String> pool = Interners.newWeakInterner();
 
-        String dup = checkDupByInfo(snapshot);
-        if (dup != null) {
-            logger.info("Identical input " + table.getSignature() + ", reuse existing snapshot at " + dup);
-            return getSnapshotTable(dup);
+        synchronized (pool.intern(tableDesc.getIdentity())) {
+            SnapshotTable reusableSnapshot = getReusableSnapShot(table, snapshot, tableDesc, cubeConfig);
+            if (reusableSnapshot != null)
+                return updateDictLastModifiedTime(reusableSnapshot.getResourcePath());
+
+            snapshot.takeSnapshot(table, tableDesc);
+            return trySaveNewSnapshot(snapshot);
         }
-
-        if (snapshot.getSignature().getSize() / 1024 / 1024 > config.getTableSnapshotMaxMB()) {
-            throw new IllegalStateException("Table snapshot should be no greater than " + config.getTableSnapshotMaxMB() //
-                    + " MB, but " + tableDesc + " size is " + snapshot.getSignature().getSize());
-        }
-
-        snapshot.takeSnapshot(table, tableDesc);
-
-        return trySaveNewSnapshot(snapshot);
     }
 
-    public SnapshotTable rebuildSnapshot(IReadableTable table, TableDesc tableDesc, String overwriteUUID) throws IOException {
+    public SnapshotTable rebuildSnapshot(IReadableTable table, TableDesc tableDesc, String overwriteUUID)
+            throws IOException {
         SnapshotTable snapshot = new SnapshotTable(table, tableDesc.getIdentity());
         snapshot.setUuid(overwriteUUID);
-
         snapshot.takeSnapshot(table, tableDesc);
 
-        SnapshotTable existing = getSnapshotTable(snapshot.getResourcePath());
-        snapshot.setLastModified(existing.getLastModified());
+        try {
+            SnapshotTable existing = getSnapshotTable(snapshot.getResourcePath());
+            snapshot.setLastModified(existing.getLastModified());
+        } catch (Exception ex) {
+            logger.error("Error reading {}, delete it and save rebuild", snapshot.getResourcePath(), ex);
+        }
 
         save(snapshot);
         snapshotCache.put(snapshot.getResourcePath(), snapshot);
@@ -135,12 +158,30 @@ public class SnapshotManager {
         return snapshot;
     }
 
+    private SnapshotTable getReusableSnapShot(IReadableTable table, SnapshotTable snapshot, TableDesc tableDesc,
+            KylinConfig cubeConfig) throws IOException {
+        String dup = checkDupByInfo(snapshot);
+
+        if ((float) snapshot.getSignature().getSize() / 1024 / 1024 > cubeConfig.getTableSnapshotMaxMB()) {
+            throw new IllegalStateException(
+                    "Table snapshot should be no greater than " + cubeConfig.getTableSnapshotMaxMB() //
+                            + " MB, but " + tableDesc + " size is " + snapshot.getSignature().getSize());
+        }
+
+        if (dup != null) {
+            logger.info("Identical input {}, reuse existing snapshot at {}", table.getSignature(), dup);
+            return getSnapshotTable(dup);
+        } else {
+            return null;
+        }
+    }
+
     public SnapshotTable trySaveNewSnapshot(SnapshotTable snapshotTable) throws IOException {
 
         String dupTable = checkDupByContent(snapshotTable);
         if (dupTable != null) {
-            logger.info("Identical snapshot content " + snapshotTable + ", reuse existing snapshot at " + dupTable);
-            return getSnapshotTable(dupTable);
+            logger.info("Identical snapshot content {}, reuse existing snapshot at {}", snapshotTable, dupTable);
+            return updateDictLastModifiedTime(dupTable);
         }
 
         save(snapshotTable);
@@ -183,20 +224,31 @@ public class SnapshotManager {
         return null;
     }
 
+    private SnapshotTable updateDictLastModifiedTime(String snapshotPath) throws IOException {
+        ResourceStore store = getStore();
+        long now = System.currentTimeMillis();
+        store.updateTimestamp(snapshotPath, now);
+        logger.info("Update snapshotTable {} lastModifiedTime to {}", snapshotPath, now);
+
+        // update cache
+        return loadAndUpdateLocalCache(snapshotPath);
+    }
+
     private void save(SnapshotTable snapshot) throws IOException {
         ResourceStore store = getStore();
         String path = snapshot.getResourcePath();
-        store.putResource(path, snapshot, SnapshotTableSerializer.FULL_SERIALIZER);
+        store.putBigResource(path, snapshot, System.currentTimeMillis(), SnapshotTableSerializer.FULL_SERIALIZER);
     }
 
     private SnapshotTable load(String resourcePath, boolean loadData) throws IOException {
-        logger.info("Loading snapshotTable from " + resourcePath + ", with loadData: " + loadData);
+        logger.info("Loading snapshotTable from {}, with loadData: {}", resourcePath, loadData);
         ResourceStore store = getStore();
 
-        SnapshotTable table = store.getResource(resourcePath, SnapshotTable.class, loadData ? SnapshotTableSerializer.FULL_SERIALIZER : SnapshotTableSerializer.INFO_SERIALIZER);
+        SnapshotTable table = store.getResource(resourcePath,
+                loadData ? SnapshotTableSerializer.FULL_SERIALIZER : SnapshotTableSerializer.INFO_SERIALIZER);
 
         if (loadData)
-            logger.debug("Loaded snapshot at " + resourcePath);
+            logger.debug("Loaded snapshot at {}", resourcePath);
 
         return table;
     }

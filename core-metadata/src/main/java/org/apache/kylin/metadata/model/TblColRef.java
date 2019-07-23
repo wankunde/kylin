@@ -22,6 +22,9 @@ import static com.google.common.base.Preconditions.checkArgument;
 
 import java.io.Serializable;
 
+import java.util.Locale;
+import java.util.function.Function;
+
 import org.apache.commons.lang.StringUtils;
 import org.apache.kylin.metadata.datatype.DataType;
 
@@ -118,6 +121,15 @@ public class TblColRef implements Serializable {
     private ColumnDesc column;
     private String identity;
     private String parserDescription;
+
+    /**
+     * Function used to get quoted identitier
+     */
+    private transient Function<TblColRef, String> quotedFunc;
+
+    public void setQuotedFunc(Function<TblColRef, String> quotedFunc) {
+        this.quotedFunc = quotedFunc;
+    }
 
     TblColRef(ColumnDesc column) {
         this.column = column;
@@ -237,6 +249,13 @@ public class TblColRef implements Serializable {
         return identity;
     }
 
+    public String getQuotedIdentity() {
+        if (quotedFunc == null)
+            return getIdentity();
+        else
+            return quotedFunc.apply(this);
+    }
+
     @Override
     public String toString() {
         if (isInnerColumn() && parserDescription != null)
@@ -259,12 +278,12 @@ public class TblColRef implements Serializable {
         if (column.getTable() == null) {
             return "NULL";
         } else {
-            return column.getTable().getIdentity().toUpperCase();
+            return column.getTable().getIdentity().toUpperCase(Locale.ROOT);
         }
     }
 
     // return DB.TABLE.COLUMN
     public String getColumWithTableAndSchema() {
-        return (getTableWithSchema() + "." + column.getName()).toUpperCase();
+        return (getTableWithSchema() + "." + column.getName()).toUpperCase(Locale.ROOT);
     }
 }

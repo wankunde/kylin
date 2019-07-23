@@ -78,7 +78,7 @@ public class NDCuboidMapper extends KylinMapper<Text, Text, Text, Text> {
         ndCuboidBuilder = new NDCuboidBuilder(cubeSegment);
         // initialize CubiodScheduler
         cuboidScheduler = CuboidSchedulerUtil.getCuboidSchedulerByMode(cubeSegment, cuboidModeName);
-        rowKeySplitter = new RowKeySplitter(cubeSegment, 65, 256);
+        rowKeySplitter = new RowKeySplitter(cubeSegment);
     }
 
 
@@ -106,9 +106,10 @@ public class NDCuboidMapper extends KylinMapper<Text, Text, Text, Text> {
             logger.info("Parent cuboid: " + parentCuboid.getId() + "; Children: " + myChildren);
         }
 
+        Pair<Integer, ByteArray> result;
         for (Long child : myChildren) {
             Cuboid childCuboid = Cuboid.findForMandatory(cubeDesc, child);
-            Pair<Integer, ByteArray> result = ndCuboidBuilder.buildKey(parentCuboid, childCuboid, rowKeySplitter.getSplitBuffers());
+            result = ndCuboidBuilder.buildKey(parentCuboid, childCuboid, rowKeySplitter.getSplitBuffers());
             outputKey.set(result.getSecond().array(), 0, result.getFirst());
             context.write(outputKey, value);
         }

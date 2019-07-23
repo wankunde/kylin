@@ -18,6 +18,7 @@
 
 package org.apache.kylin.metrics.lib.impl;
 
+import java.util.Arrays;
 import java.util.List;
 
 import org.apache.kylin.metrics.lib.ActiveReservoirListener;
@@ -27,6 +28,9 @@ import org.slf4j.LoggerFactory;
 
 import com.google.common.collect.Lists;
 
+/**
+ * A Reservoir which don't staged metrics message at all, emit them in no time.
+ */
 public class InstantReservoir extends AbstractActiveReservoir {
 
     private static final Logger logger = LoggerFactory.getLogger(InstantReservoir.class);
@@ -49,7 +53,7 @@ public class InstantReservoir extends AbstractActiveReservoir {
             if (!notifyListenerOfUpdatedRecord(listener, record)) {
                 ifSucceed = false;
                 logger.warn(
-                        "It fails to notify listener " + listener.toString() + " of updated record " + record.getKey());
+                        "It fails to notify listener " + listener.toString() + " of updated record " + Arrays.toString(record.getKey()));
             }
         }
         if (!ifSucceed) {
@@ -64,7 +68,7 @@ public class InstantReservoir extends AbstractActiveReservoir {
     }
 
     private boolean notifyListenerHAOfUpdatedRecord(Record record) {
-        logger.info("The HA listener " + listenerHA.toString() + " for updated record " + record.getKey()
+        logger.info("The HA listener " + listenerHA.toString() + " for updated record " + Arrays.toString(record.getKey())
                 + " will be started");
         if (!notifyListenerOfUpdatedRecord(listenerHA, record)) {
             logger.error("The HA listener also fails!!!");

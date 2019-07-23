@@ -19,10 +19,9 @@
 package org.apache.kylin.engine.mr;
 
 import java.text.SimpleDateFormat;
-import java.util.ArrayList;
-import java.util.Collections;
 import java.util.Date;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.TimeZone;
 import java.util.regex.Matcher;
@@ -63,9 +62,8 @@ public class CubingJob extends DefaultChainedExecutable {
     public enum AlgorithmEnum {
         LAYER, INMEM
     }
-
     public enum CubingJobTypeEnum {
-        BUILD("BUILD", 20), OPTIMIZE("OPTIMIZE", 5), MERGE("MERGE", 25);
+        BUILD("BUILD", 20), OPTIMIZE("OPTIMIZE", 5), MERGE("MERGE", 25), STREAM("STREAM", 30);
 
         private final String name;
         private final int defaultPriority;
@@ -88,7 +86,7 @@ public class CubingJob extends DefaultChainedExecutable {
                 return null;
             }
             for (CubingJobTypeEnum jobTypeEnum : CubingJobTypeEnum.values()) {
-                if (jobTypeEnum.name.equals(name.toUpperCase())) {
+                if (jobTypeEnum.name.equals(name.toUpperCase(Locale.ROOT))) {
                     return jobTypeEnum;
                 }
             }
@@ -120,6 +118,10 @@ public class CubingJob extends DefaultChainedExecutable {
         return initCubingJob(seg, CubingJobTypeEnum.MERGE.toString(), submitter, config);
     }
 
+    public static CubingJob createStreamJob(CubeSegment seg, String submitter, JobEngineConfig config) {
+        return initCubingJob(seg, CubingJobTypeEnum.STREAM.toString(), submitter, config);
+    }
+
     private static CubingJob initCubingJob(CubeSegment seg, String jobType, String submitter, JobEngineConfig config) {
         KylinConfig kylinConfig = config.getConfig();
         CubeInstance cube = seg.getCubeInstance();
@@ -138,7 +140,7 @@ public class CubingJob extends DefaultChainedExecutable {
         }
 
         CubingJob result = new CubingJob();
-        SimpleDateFormat format = new SimpleDateFormat("z yyyy-MM-dd HH:mm:ss");
+        SimpleDateFormat format = new SimpleDateFormat("z yyyy-MM-dd HH:mm:ss", Locale.ROOT);
         format.setTimeZone(TimeZone.getTimeZone(config.getTimeZone()));
         result.setDeployEnvName(kylinConfig.getDeployEnv());
         result.setProjectName(projList.get(0).getName());
@@ -251,6 +253,12 @@ public class CubingJob extends DefaultChainedExecutable {
     }
 
     @Override
+    protected void onExecuteStart(ExecutableContext executableContext) {
+        KylinConfig.setAndUnsetThreadLocalConfig(getCubeSpecificConfig());
+        super.onExecuteStart(executableContext);
+    }
+
+    @Override
     protected void onExecuteFinished(ExecuteResult result, ExecutableContext executableContext) {
         long time = 0L;
         for (AbstractExecutable task : getTasks()) {
@@ -281,8 +289,7 @@ public class CubingJob extends DefaultChainedExecutable {
             jobStats.setJobStats(findSourceSizeBytes(), findCubeSizeBytes(), getDuration(), getMapReduceWaitTime(),
                     getPerBytesTimeCost(findSourceSizeBytes(), getDuration()));
             if (CubingJobTypeEnum.getByName(getJobType()) == CubingJobTypeEnum.BUILD) {
-                jobStats.setJobStepStats(
-                        getTaskDurationByName(ExecutableConstants.STEP_NAME_FACT_DISTINCT_COLUMNS),
+                jobStats.setJobStepStats(getTaskDurationByName(ExecutableConstants.STEP_NAME_FACT_DISTINCT_COLUMNS),
                         getTaskDurationByName(ExecutableConstants.STEP_NAME_BUILD_DICTIONARY),
                         getTaskDurationByName(ExecutableConstants.STEP_NAME_BUILD_IN_MEM_CUBE),
                         getTaskDurationByName(ExecutableConstants.STEP_NAME_CONVERT_CUBOID_TO_HFILE));
@@ -348,30 +355,6 @@ public class CubingJob extends DefaultChainedExecutable {
     public long findCubeSizeBytes() {
         // look for the info BACKWARD, let the last step that claims the cube size win
         return Long.parseLong(findExtraInfoBackward(CUBE_SIZE_BYTES, "0"));
-    }
-
-    public String findExtraInfo(String key, String dft) {
-        return findExtraInfo(key, dft, false);
-    }
-
-    public String findExtraInfoBackward(String key, String dft) {
-        return findExtraInfo(key, dft, true);
-    }
-
-    private String findExtraInfo(String key, String dft, boolean backward) {
-        ArrayList<AbstractExecutable> tasks = new ArrayList<AbstractExecutable>(getTasks());
-
-        if (backward) {
-            Collections.reverse(tasks);
-        }
-
-        for (AbstractExecutable child : tasks) {
-            Output output = getManager().getOutput(child.getId());
-            String value = output.getExtra().get(key);
-            if (value != null)
-                return value;
-        }
-        return dft;
     }
 
 }

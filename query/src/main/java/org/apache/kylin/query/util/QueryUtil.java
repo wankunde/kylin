@@ -19,6 +19,7 @@
 package org.apache.kylin.query.util;
 
 import java.util.List;
+import java.util.Locale;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -37,12 +38,24 @@ public class QueryUtil {
 
     protected static final Logger logger = LoggerFactory.getLogger(QueryUtil.class);
 
+    private QueryUtil() {
+        throw new IllegalStateException("Class QueryUtil is an utility class !");
+    }
+
     private static List<IQueryTransformer> queryTransformers;
 
     public interface IQueryTransformer {
         String transform(String sql, String project, String defaultSchema);
     }
 
+    static final String KEYWORD_SELECT = "select";
+    static final String KEYWORD_WITH = "with";
+    static final String KEYWORD_EXPLAIN = "explain";
+
+    /**
+     * @deprecated Deprecated because of KYLIN-3594
+     */
+    @Deprecated
     public static String massageSql(String sql, String project, int limit, int offset, String defaultSchema) {
         sql = sql.trim();
         sql = sql.replace("\r", " ").replace("\n", System.getProperty("line.separator"));
@@ -54,11 +67,11 @@ public class QueryUtil {
         while (sql.endsWith(";"))
             sql = sql.substring(0, sql.length() - 1);
 
-        String sql1=sql;
+        String sql1 = sql;
         final String suffixPattern = "^.+?\\s(limit\\s\\d+)?\\s(offset\\s\\d+)?\\s*$";
         sql = sql.replaceAll("\\s+", " ");
         Pattern pattern = Pattern.compile(suffixPattern);
-        Matcher matcher = pattern.matcher(sql.toLowerCase() + "  ");
+        Matcher matcher = pattern.matcher(sql.toLowerCase(Locale.ROOT) + "  ");
 
         if (matcher.find()) {
             if (limit > 0 && matcher.group(1) == null) {
@@ -71,7 +84,7 @@ public class QueryUtil {
 
         // https://issues.apache.org/jira/browse/KYLIN-2649
         if (kylinConfig.getForceLimit() > 0 && limit <= 0 && matcher.group(1) == null
-                && sql1.toLowerCase().matches("^select\\s+\\*\\p{all}*")) {
+                && sql1.toLowerCase(Locale.ROOT).matches("^select\\s+\\*\\p{all}*")) {
             sql1 += ("\nLIMIT " + kylinConfig.getForceLimit());
         }
 
@@ -85,6 +98,29 @@ public class QueryUtil {
         return sql1;
     }
 
+    /**
+     * add remove catalog step at final
+     */
+    public static String massageSql(String sql, String project, int limit, int offset, String defaultSchema, String catalog) {
+        String correctedSql = massageSql(sql, project, limit, offset, defaultSchema);
+        correctedSql = removeCatalog(correctedSql, catalog);
+        return correctedSql;
+    }
+
+    /**
+     * Although SQL standard define CATALOG concept, ISV has right not to implement it.
+     * We remove it in before send it to SQL parser.
+     *
+     * @param sql query which maybe has such pattern: [[catalogName.]schemaName.]tableName
+     * @return replace [[catalogName.]schemaName.]tableName with [schemaName.]tableName
+     */
+    static String removeCatalog(String sql, String catalog) {
+        if (catalog == null)
+            return sql;
+        else
+            return sql.replace(catalog + ".", "");
+    }
+
     private static void initQueryTransformers() {
         List<IQueryTransformer> transformers = Lists.newArrayList();
 
@@ -94,7 +130,7 @@ public class QueryUtil {
                 IQueryTransformer t = (IQueryTransformer) ClassUtil.newInstance(clz);
                 transformers.add(t);
             } catch (Exception e) {
-                throw new RuntimeException("Failed to init query transformer", e);
+                throw new IllegalStateException("Failed to init query transformer", e);
             }
         }
 
@@ -123,6 +159,9 @@ public class QueryUtil {
     }
 
     public static String makeErrorMsgUserFriendly(String errorMsg) {
+        if (errorMsg == null) {
+            return "Unknown error.";
+        }
         try {
             // make one line
             errorMsg = errorMsg.replaceAll("\\s", " ");
@@ -140,16 +179,17 @@ public class QueryUtil {
     }
 
     public static boolean isSelectStatement(String sql) {
-        String sql1 = sql.toLowerCase();
+        String sql1 = sql.toLowerCase(Locale.ROOT);
         sql1 = removeCommentInSql(sql1);
         sql1 = sql1.trim();
-        return sql1.startsWith("select") || (sql1.startsWith("with") && sql1.contains("select"))
-                || (sql1.startsWith("explain") && sql1.contains("select"));
+
+        return sql1.startsWith(KEYWORD_SELECT) || (sql1.startsWith(KEYWORD_WITH) && sql1.contains(KEYWORD_SELECT))
+                || (sql1.startsWith(KEYWORD_EXPLAIN) && sql1.contains(KEYWORD_SELECT));
     }
 
     public static String removeCommentInSql(String sql1) {
         // match two patterns, one is "-- comment", the other is "/* comment */"
-        final String[] commentPatterns = new String[] { "--[^\r\n]*", "/\\*[\\s\\S]*?\\*/" };
+        final String[] commentPatterns = new String[]{"--(?!.*\\*/).*?[\r\n]", "/\\*(.|\r|\n)*?\\*/"};
 
         for (int i = 0; i < commentPatterns.length; i++) {
             sql1 = sql1.replaceAll(commentPatterns[i], "");

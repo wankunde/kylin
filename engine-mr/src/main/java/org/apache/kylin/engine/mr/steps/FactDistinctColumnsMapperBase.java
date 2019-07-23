@@ -39,8 +39,6 @@ import org.apache.kylin.engine.mr.common.AbstractHadoopJob;
 import org.apache.kylin.engine.mr.common.BatchConstants;
 import org.apache.kylin.metadata.model.TblColRef;
 
-import com.google.common.collect.Lists;
-
 /**
  */
 abstract public class FactDistinctColumnsMapperBase<KEYIN, VALUEIN> extends KylinMapper<KEYIN, VALUEIN, SelfDefineSortableKey, Text> {
@@ -50,16 +48,15 @@ abstract public class FactDistinctColumnsMapperBase<KEYIN, VALUEIN> extends Kyli
     protected CubeSegment cubeSeg;
     protected CubeDesc cubeDesc;
     protected long baseCuboidId;
-    protected List<TblColRef> dictCols;
     protected IMRTableInputFormat flatTableInputFormat;
+    protected List<TblColRef> allCols;
 
     protected Text outputKey = new Text();
-    //protected SelfDefineSortableKey sortableKey = new SelfDefineSortableKey();
     protected Text outputValue = new Text();
     protected int errorRecordCounter = 0;
 
     protected CubeJoinedFlatTableEnrich intermediateTableDesc;
-    protected int[] dictionaryColumnIndex;
+    protected int[] columnIndex;
 
     protected FactDistinctColumnsReducerMapping reducerMapping;
     
@@ -74,20 +71,18 @@ abstract public class FactDistinctColumnsMapperBase<KEYIN, VALUEIN> extends Kyli
         cubeSeg = cube.getSegmentById(conf.get(BatchConstants.CFG_CUBE_SEGMENT_ID));
         cubeDesc = cube.getDescriptor();
         baseCuboidId = Cuboid.getBaseCuboidId(cubeDesc);
-        dictCols = Lists.newArrayList(cubeDesc.getAllColumnsNeedDictionaryBuilt());
+        reducerMapping = new FactDistinctColumnsReducerMapping(cube);
+        allCols = reducerMapping.getAllDimDictCols();
 
         flatTableInputFormat = MRUtil.getBatchCubingInputSide(cubeSeg).getFlatTableInputFormat();
 
         intermediateTableDesc = new CubeJoinedFlatTableEnrich(EngineFactory.getJoinedFlatTableDesc(cubeSeg), cubeDesc);
-        dictionaryColumnIndex = new int[dictCols.size()];
-        for (int i = 0; i < dictCols.size(); i++) {
-            TblColRef colRef = dictCols.get(i);
+        columnIndex = new int[allCols.size()];
+        for (int i = 0; i < allCols.size(); i++) {
+            TblColRef colRef = allCols.get(i);
             int columnIndexOnFlatTbl = intermediateTableDesc.getColumnIndex(colRef);
-            dictionaryColumnIndex[i] = columnIndexOnFlatTbl;
+            columnIndex[i] = columnIndexOnFlatTbl;
         }
-
-        reducerMapping = new FactDistinctColumnsReducerMapping(cube,
-                conf.getInt(BatchConstants.CFG_HLL_REDUCER_NUM, 1));
     }
 
     protected void handleErrorRecord(String[] record, Exception ex) throws IOException {

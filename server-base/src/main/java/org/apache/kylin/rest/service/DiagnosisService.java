@@ -23,6 +23,7 @@ import java.io.IOException;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 
 import org.apache.commons.lang3.StringUtils;
@@ -41,16 +42,11 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 import com.google.common.collect.Lists;
-import com.google.common.io.Files;
 
 @Component("diagnosisService")
 public class DiagnosisService extends BasicService {
 
     private static final Logger logger = LoggerFactory.getLogger(DiagnosisService.class);
-
-    protected File getDumpDir() {
-        return Files.createTempDir();
-    }
 
     @Autowired
     private AclEvaluate aclEvaluate;
@@ -64,7 +60,7 @@ public class DiagnosisService extends BasicService {
         File[] files = destDir.listFiles();
         if (files == null) {
             throw new BadRequestException(
-                    String.format(msg.getDIAG_PACKAGE_NOT_AVAILABLE(), destDir.getAbsolutePath()));
+                    String.format(Locale.ROOT, msg.getDIAG_PACKAGE_NOT_AVAILABLE(), destDir.getAbsolutePath()));
         }
         for (File subDir : files) {
             if (subDir.isDirectory()) {
@@ -75,7 +71,8 @@ public class DiagnosisService extends BasicService {
                 }
             }
         }
-        throw new BadRequestException(String.format(msg.getDIAG_PACKAGE_NOT_FOUND(), destDir.getAbsolutePath()));
+        throw new BadRequestException(
+                String.format(Locale.ROOT, msg.getDIAG_PACKAGE_NOT_FOUND(), destDir.getAbsolutePath()));
     }
 
     public BadQueryHistory getProjectBadQueryHistory(String project) throws IOException {
@@ -83,17 +80,15 @@ public class DiagnosisService extends BasicService {
         return getBadQueryHistoryManager().getBadQueriesForProject(project);
     }
 
-    public String dumpProjectDiagnosisInfo(String project) throws IOException {
+    public String dumpProjectDiagnosisInfo(String project, File exportPath) throws IOException {
         aclEvaluate.checkProjectOperationPermission(project);
-        File exportPath = getDumpDir();
         String[] args = { project, exportPath.getAbsolutePath() };
         runDiagnosisCLI(args);
         return getDiagnosisPackageName(exportPath);
     }
 
-    public String dumpJobDiagnosisInfo(String jobId) throws IOException {
+    public String dumpJobDiagnosisInfo(String jobId, File exportPath) throws IOException {
         aclEvaluate.checkProjectOperationPermission(jobService.getJobInstance(jobId));
-        File exportPath = getDumpDir();
         String[] args = { jobId, exportPath.getAbsolutePath() };
         runDiagnosisCLI(args);
         return getDiagnosisPackageName(exportPath);
@@ -108,7 +103,8 @@ public class DiagnosisService extends BasicService {
         logger.debug("DiagnosisInfoCLI args: " + Arrays.toString(args));
         File script = new File(KylinConfig.getKylinHome() + File.separator + "bin", "diag.sh");
         if (!script.exists()) {
-            throw new BadRequestException(String.format(msg.getDIAG_NOT_FOUND(), script.getAbsolutePath()));
+            throw new BadRequestException(
+                    String.format(Locale.ROOT, msg.getDIAG_NOT_FOUND(), script.getAbsolutePath()));
         }
 
         String diagCmd = script.getAbsolutePath() + " " + StringUtils.join(args, " ");

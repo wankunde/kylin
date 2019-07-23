@@ -78,12 +78,12 @@ public class JobController extends BasicController {
             try {
                 jobSearchMode = JobService.JobSearchMode.valueOf(jobRequest.getJobSearchMode());
             } catch (IllegalArgumentException e) {
-                logger.error("Invalid value for JobSearchMode: '" + jobRequest.getJobSearchMode() + "', skip it.", e);
+                logger.warn("Invalid value for JobSearchMode: '" + jobRequest.getJobSearchMode() + "', skip it.");
             }
         }
 
         try {
-            jobInstanceList = jobService.searchJobs(jobRequest.getCubeName(), jobRequest.getProjectName(), statusList,
+            jobInstanceList = jobService.searchJobsV2(jobRequest.getCubeName(), jobRequest.getProjectName(), statusList,
                     jobRequest.getLimit(), jobRequest.getOffset(), timeFilter, jobSearchMode);
         } catch (Exception e) {
             logger.error(e.getLocalizedMessage(), e);
@@ -160,7 +160,8 @@ public class JobController extends BasicController {
 
         try {
             final JobInstance jobInstance = jobService.getJobInstance(jobId);
-            return jobService.cancelJob(jobInstance);
+            jobService.cancelJob(jobInstance);
+            return jobService.getJobInstance(jobId);
         } catch (Exception e) {
             logger.error(e.getLocalizedMessage(), e);
             throw new InternalErrorException(e);
@@ -179,7 +180,8 @@ public class JobController extends BasicController {
 
         try {
             final JobInstance jobInstance = jobService.getJobInstance(jobId);
-            return jobService.pauseJob(jobInstance);
+            jobService.pauseJob(jobInstance);
+            return jobService.getJobInstance(jobId);
         } catch (Exception e) {
             logger.error(e.getLocalizedMessage(), e);
             throw new InternalErrorException(e);

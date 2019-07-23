@@ -445,4 +445,83 @@ KylinApp.controller('CubeAdvanceSettingCtrl', function ($scope, $modal,cubeConfi
       $scope.$emit('AdvancedSettingEdited');
     });
   }
+
+  $scope.newSnapshot = {
+    select: {}
+  };
+
+  $scope.removeSnapshotTable = function(index) {
+    $scope.cubeMetaFrame.snapshot_table_desc_list.splice(index, 1);
+  };
+
+  $scope.addSnapshot = function(newSnapshot) {
+    if (!$scope.cubeMetaFrame.snapshot_table_desc_list) {
+       $scope.cubeMetaFrame.snapshot_table_desc_list = [];
+    }
+    if (!newSnapshot.table_name || !newSnapshot.storage_type) {
+      swal('Oops...', 'Snapshot table name or storage should not be empty', 'warning');
+      return;
+    } else if ($scope.cubeMetaFrame.snapshot_table_desc_list.length && newSnapshot.editIndex == null){
+      var existSnapshot = _.find($scope.cubeMetaFrame.snapshot_table_desc_list, function(snapshot){ return snapshot.table_name === newSnapshot.table_name;});
+      if (!!existSnapshot) {
+        swal('Oops...', 'Snapshot table already existed', 'warning');
+        return;
+      }
+    }
+    if (newSnapshot.editIndex != null) {
+      $scope.cubeMetaFrame.snapshot_table_desc_list[newSnapshot.editIndex] = angular.copy(newSnapshot);
+    } else {
+      $scope.cubeMetaFrame.snapshot_table_desc_list.push(angular.copy(newSnapshot));
+    }
+    $scope.newSnapshot.select = {};
+    $scope.addNewSanpshot = !$scope.addNewSanpshot;
+  };
+
+  $scope.changeSnapshotStorage = function(snapshot) {
+    if (snapshot.storage_type == 'hbase') {
+      snapshot.global = true;
+    }
+  };
+
+  $scope.changeSnapshotTable = function(changeSnapshot, beforeTableName, snapshotTableDescList) {
+    var existSnapshot = _.find(snapshotTableDescList, function(snapshot) {
+      return snapshot.table_name === changeSnapshot.table_name;
+    });
+    if (!!existSnapshot) {
+      changeSnapshot.table_name = beforeTableName;
+      swal('Oops...', 'Snapshot table already existed', 'warning');
+    }
+  };
+
+  $scope.addNewSnapshot = function(sanpshot, index) {
+    if (sanpshot && index >=0) {
+      $scope.newSnapshot.select = sanpshot;
+      $scope.addNewSanpshot = true;
+      $scope.newSnapshot.select.editIndex = index;
+    } else {
+      $scope.addNewSanpshot = !$scope.addNewSanpshot;
+    }
+  };
+
+  $scope.cancelEditSnapshot = function() {
+    $scope.newSnapshot.select = {};
+    $scope.addNewSanpshot = !$scope.addNewSanpshot;
+  };
+
+  $scope.getCubeLookups = function() {
+    var modelDesc = modelsManager.getModel($scope.cubeMetaFrame.model_name);
+    var modelLookups = modelDesc ? modelDesc.lookups : [];
+    var cubeLookups = [];
+    angular.forEach(modelLookups, function(modelLookup, index) {
+      var dimensionLookup = _.find($scope.cubeMetaFrame.dimensions, function(dimension){ return dimension.table === modelLookup.alias;});
+      if (!!dimensionLookup) {
+        if (cubeLookups.indexOf(modelLookup.table) === -1) {
+          cubeLookups.push(modelLookup.table);
+        }
+      }
+    });
+    return cubeLookups;
+  };
+
+  $scope.cubeLookups = $scope.getCubeLookups();
 });

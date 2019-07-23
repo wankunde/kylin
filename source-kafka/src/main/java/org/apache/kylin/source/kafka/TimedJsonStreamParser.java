@@ -23,6 +23,7 @@ import java.lang.reflect.Constructor;
 import java.nio.ByteBuffer;
 import java.util.List;
 import java.util.ArrayList;
+import java.util.Locale;
 import java.util.Map;
 import java.util.HashMap;
 import java.util.TreeMap;
@@ -42,6 +43,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.type.MapType;
 import com.fasterxml.jackson.databind.type.SimpleType;
 import com.google.common.collect.Lists;
+import com.google.common.base.Charsets;
 
 /**
  * An utility class which parses a JSON streaming message to a list of strings (represent a row in table).
@@ -68,6 +70,7 @@ public final class TimedJsonStreamParser extends StreamingParser {
     private boolean strictCheck = true;
     private final Map<String, Object> root = new TreeMap<>(String.CASE_INSENSITIVE_ORDER);
     private final Map<String, Object> tempMap = new TreeMap<>(String.CASE_INSENSITIVE_ORDER);
+    private final Map<String, String> colLowerCaseMap = new TreeMap<>(String.CASE_INSENSITIVE_ORDER);
     private final Map<String, String[]> nameMap = new HashMap<>();
     public static final String EMBEDDED_PROPERTY_SEPARATOR = "|";
 
@@ -103,6 +106,10 @@ public final class TimedJsonStreamParser extends StreamingParser {
         mapper.disable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES);
         mapper.disable(DeserializationFeature.FAIL_ON_INVALID_SUBTYPE);
         mapper.enable(DeserializationFeature.USE_JAVA_ARRAY_FOR_JSON_ARRAY);
+
+        for (TblColRef col : allColumns) {
+            colLowerCaseMap.put(col.getName(), col.getName().toLowerCase(Locale.ROOT));
+        }
     }
 
     @Override
@@ -116,7 +123,7 @@ public final class TimedJsonStreamParser extends StreamingParser {
             ArrayList<String> result = Lists.newArrayList();
 
             for (TblColRef column : allColumns) {
-                final String columnName = column.getName().toLowerCase();
+                final String columnName = colLowerCaseMap.get(column.getName());
                 if (populateDerivedTimeColumns(columnName, result, t) == false) {
                     result.add(getValueByKey(column, root));
                 }
@@ -127,6 +134,7 @@ public final class TimedJsonStreamParser extends StreamingParser {
             messageRowList.add(streamingMessageRow);
             return messageRowList;
         } catch (IOException e) {
+            logger.error("malformed data: {}", new String(buffer.array(), Charsets.UTF_8));
             logger.error("error", e);
             throw new RuntimeException(e);
         }
@@ -138,15 +146,15 @@ public final class TimedJsonStreamParser extends StreamingParser {
     }
 
     public String[] getEmbeddedPropertyNames(TblColRef column) {
-        final String colName = column.getName().toLowerCase();
+        final String colName = column.getName().toLowerCase(Locale.ROOT);
         String[] names = nameMap.get(colName);
         if (names == null) {
             String comment = column.getColumnDesc().getComment(); // use comment to parse the structure
             if (!StringUtils.isEmpty(comment) && comment.contains(EMBEDDED_PROPERTY_SEPARATOR)) {
-                names = comment.toLowerCase().split("\\" + EMBEDDED_PROPERTY_SEPARATOR);
+                names = comment.toLowerCase(Locale.ROOT).split("\\" + EMBEDDED_PROPERTY_SEPARATOR);
                 nameMap.put(colName, names);
             } else if (colName.contains(separator)) { // deprecated, just be compitable for old version
-                names = colName.toLowerCase().split(separator);
+                names = colName.toLowerCase(Locale.ROOT).split(separator);
                 nameMap.put(colName, names);
             }
         }
@@ -155,7 +163,7 @@ public final class TimedJsonStreamParser extends StreamingParser {
     }
 
     protected String getValueByKey(TblColRef column, Map<String, Object> rootMap) throws IOException {
-        final String key = column.getName().toLowerCase();
+        final String key = column.getName().toLowerCase(Locale.ROOT);
         if (rootMap.containsKey(key)) {
             return objToString(rootMap.get(key));
         }

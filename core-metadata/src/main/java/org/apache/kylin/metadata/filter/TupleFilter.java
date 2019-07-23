@@ -20,17 +20,20 @@ package org.apache.kylin.metadata.filter;
 
 import java.nio.ByteBuffer;
 import java.util.Collection;
+import java.util.HashMap;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
+import org.apache.kylin.common.KylinConfig;
 import org.apache.kylin.metadata.model.TblColRef;
 import org.apache.kylin.metadata.tuple.IEvaluatableTuple;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import com.google.common.collect.Maps;
+import com.google.common.collect.Sets;
 
 /**
  * 
@@ -81,6 +84,44 @@ public abstract class TupleFilter {
         SWAP_OP_MAP.put(FilterOperatorEnum.LT, FilterOperatorEnum.GT);
         SWAP_OP_MAP.put(FilterOperatorEnum.GTE, FilterOperatorEnum.LTE);
     }
+    
+    public static CompareTupleFilter compare(TblColRef col, FilterOperatorEnum op) {
+        CompareTupleFilter r = new CompareTupleFilter(op);
+        r.addChild(new ColumnTupleFilter(col));
+        return r;
+    }
+    
+    public static CompareTupleFilter compare(TblColRef col, FilterOperatorEnum op, Object val) {
+        CompareTupleFilter r = new CompareTupleFilter(op);
+        r.addChild(new ColumnTupleFilter(col));
+        if (val instanceof TupleFilter)
+            r.addChild((TupleFilter) val);
+        else if (val instanceof TblColRef)
+            r.addChild(new ColumnTupleFilter((TblColRef) col));
+        else
+            r.addChild(new ConstantTupleFilter(val));
+        return r;
+    }
+
+    public static LogicalTupleFilter and(TupleFilter... children) {
+        LogicalTupleFilter r = new LogicalTupleFilter(FilterOperatorEnum.AND);
+        r.addChildren(children);
+        return r;
+    }
+    
+    public static LogicalTupleFilter or(TupleFilter... children) {
+        LogicalTupleFilter r = new LogicalTupleFilter(FilterOperatorEnum.OR);
+        r.addChildren(children);
+        return r;
+    }
+    
+    public static LogicalTupleFilter not(TupleFilter child) {
+        LogicalTupleFilter r = new LogicalTupleFilter(FilterOperatorEnum.NOT);
+        r.addChild(child);
+        return r;
+    }
+    
+    // ============================================================================
 
     protected final List<TupleFilter> children;
     protected FilterOperatorEnum operator;
@@ -175,10 +216,19 @@ public abstract class TupleFilter {
      * @return
      */
     public TupleFilter flatFilter() {
-        return flattenInternal(this);
+        return flatFilter(KylinConfig.getInstanceFromEnv().getFlatFilterMaxChildrenSize());
     }
 
-    private TupleFilter flattenInternal(TupleFilter filter) {
+    /**
+     * throws IllegalStateException when the flat children exceed the maxFlatChildrenSize
+     * @param maxFlatChildrenSize
+     * @return
+     */
+    public TupleFilter flatFilter(int maxFlatChildrenSize) {
+        return flattenInternal(this, maxFlatChildrenSize);
+    }
+
+    private TupleFilter flattenInternal(TupleFilter filter, int maxFlatChildrenSize) {
         TupleFilter flatFilter = null;
         if (!(filter instanceof LogicalTupleFilter)) {
             flatFilter = new LogicalTupleFilter(FilterOperatorEnum.AND);
@@ -191,7 +241,7 @@ public abstract class TupleFilter {
         List<TupleFilter> andChildren = new LinkedList<TupleFilter>();
         List<TupleFilter> orChildren = new LinkedList<TupleFilter>();
         for (TupleFilter child : filter.getChildren()) {
-            TupleFilter flatChild = flattenInternal(child);
+            TupleFilter flatChild = flattenInternal(child, maxFlatChildrenSize);
             FilterOperatorEnum childOp = flatChild.getOperator();
             if (childOp == FilterOperatorEnum.AND) {
                 andChildren.add(flatChild);
@@ -209,7 +259,7 @@ public abstract class TupleFilter {
                 flatFilter.addChildren(andChild.getChildren());
             }
             if (!orChildren.isEmpty()) {
-                List<TupleFilter> fullAndFilters = cartesianProduct(orChildren, flatFilter);
+                List<TupleFilter> fullAndFilters = cartesianProduct(orChildren, flatFilter, maxFlatChildrenSize);
                 flatFilter = new LogicalTupleFilter(FilterOperatorEnum.OR);
                 flatFilter.addChildren(fullAndFilters);
             }
@@ -222,14 +272,18 @@ public abstract class TupleFilter {
         } else if (op == FilterOperatorEnum.NOT) {
             assert (filter.children.size() == 1);
             TupleFilter reverse = filter.children.get(0).reverse();
-            flatFilter = flattenInternal(reverse);
+            flatFilter = flattenInternal(reverse, maxFlatChildrenSize);
         } else {
             throw new IllegalStateException("Filter is " + filter);
+        }
+        if (flatFilter.getChildren() != null && flatFilter.getChildren().size() > maxFlatChildrenSize) {
+            throw new IllegalStateException("the filter is too large after do the flat, size="
+                    + flatFilter.getChildren().size());
         }
         return flatFilter;
     }
 
-    private List<TupleFilter> cartesianProduct(List<TupleFilter> leftOrFilters, TupleFilter partialAndFilter) {
+    private List<TupleFilter> cartesianProduct(List<TupleFilter> leftOrFilters, TupleFilter partialAndFilter, int maxFlatChildrenSize) {
         List<TupleFilter> oldProductFilters = new LinkedList<TupleFilter>();
         oldProductFilters.add(partialAndFilter);
         for (TupleFilter orFilter : leftOrFilters) {
@@ -239,13 +293,71 @@ public abstract class TupleFilter {
                     TupleFilter fullAndFilter = productFilter.copy();
                     fullAndFilter.addChildren(orChildFilter.getChildren());
                     newProductFilters.add(fullAndFilter);
+                    if (newProductFilters.size() > maxFlatChildrenSize) {
+                        throw new IllegalStateException("the filter is too large after do the flat, size="
+                                + newProductFilters.size());
+                    }
                 }
             }
             oldProductFilters = newProductFilters;
         }
         return oldProductFilters;
     }
+    
+    public HashMap<TblColRef, Object> findMustEqualColsAndValues(Collection<TblColRef> lookingForCols) {
+        HashMap<TblColRef, Object> result = new HashMap<>();
+        findMustEqualColsAndValues(this, lookingForCols, result);
+        return result;
+    }
 
+    private void findMustEqualColsAndValues(TupleFilter filter, Collection<TblColRef> lookingForCols, HashMap<TblColRef, Object> result) {
+        if (filter instanceof CompareTupleFilter) {
+            CompareTupleFilter comp = (CompareTupleFilter) filter;
+            TblColRef col = comp.getColumn();
+            if (lookingForCols.contains(col)) {
+                if (comp.getOperator() == FilterOperatorEnum.EQ)
+                    result.put(col, comp.getFirstValue());
+                else if (comp.getOperator() == FilterOperatorEnum.ISNULL)
+                    result.put(col, null);
+            }
+            return;
+        }
+
+        if (filter instanceof LogicalTupleFilter) {
+            LogicalTupleFilter logic = (LogicalTupleFilter) filter;
+            if (logic.getOperator() == FilterOperatorEnum.AND) {
+                for (TupleFilter child : logic.getChildren())
+                    findMustEqualColsAndValues(child, lookingForCols, result);
+            }
+            return;
+        }
+    }
+
+    //find must true compareTupleFilter
+    public Set<CompareTupleFilter> findMustTrueCompareFilters() {
+        Set<CompareTupleFilter> result = Sets.newHashSet();
+        findMustTrueCompareFilters(this, result);
+        return result;
+    }
+
+    private void findMustTrueCompareFilters(TupleFilter filter, Set<CompareTupleFilter> result) {
+        if (filter instanceof CompareTupleFilter) {
+            if (((CompareTupleFilter) filter).getColumn() != null) {
+                result.add((CompareTupleFilter) filter);
+            }
+            return;
+        }
+        
+        if (filter instanceof LogicalTupleFilter) {
+            if (filter.getOperator() == FilterOperatorEnum.AND) {
+                for (TupleFilter child : filter.getChildren()) {
+                    findMustTrueCompareFilters(child, result);
+                }
+            }
+            return;
+        }
+    }
+    
     public abstract boolean isEvaluable();
 
     public abstract boolean evaluate(IEvaluatableTuple tuple, IFilterCodeSystem<?> cs);
@@ -282,28 +394,6 @@ public abstract class TupleFilter {
         for (TupleFilter child : filter.getChildren()) {
             collectColumns(child, collector);
         }
-    }
-
-    public static TupleFilter and(TupleFilter f1, TupleFilter f2) {
-        if (f1 == null)
-            return f2;
-        if (f2 == null)
-            return f1;
-
-        if (f1.getOperator() == FilterOperatorEnum.AND) {
-            f1.addChild(f2);
-            return f1;
-        }
-
-        if (f2.getOperator() == FilterOperatorEnum.AND) {
-            f2.addChild(f1);
-            return f2;
-        }
-
-        LogicalTupleFilter and = new LogicalTupleFilter(FilterOperatorEnum.AND);
-        and.addChild(f1);
-        and.addChild(f2);
-        return and;
     }
 
 }

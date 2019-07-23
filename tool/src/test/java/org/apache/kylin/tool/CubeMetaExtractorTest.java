@@ -77,11 +77,12 @@ public class CubeMetaExtractorTest extends LocalFileMetadataTestCase {
         Preconditions.checkState(files.length == 1);
         String dumpDir = files[0].getAbsolutePath();
         KylinConfig instanceFromUri = KylinConfig.createInstanceFromUri(dumpDir);
-        NavigableSet<String> tables = ResourceTool.list(instanceFromUri, "table");
-        NavigableSet<String> tableExds = ResourceTool.list(instanceFromUri, "table_exd");
+        NavigableSet<String> tables = new ResourceTool().list(instanceFromUri, "table");
+        NavigableSet<String> tableExds = new ResourceTool().list(instanceFromUri, "table_exd");
         Set<String> expectTbl = Sets.newHashSet(
                 "/table/DEFAULT.FIFTY_DIM.json", //
                 "/table/DEFAULT.STREAMING_TABLE.json", //
+                "/table/DEFAULT.STREAMING_CATEGORY.json", //
                 "/table/DEFAULT.TEST_ACCOUNT.json", //
                 "/table/DEFAULT.TEST_CATEGORY_GROUPINGS.json", //
                 "/table/DEFAULT.TEST_COUNTRY.json", //
@@ -94,7 +95,9 @@ public class CubeMetaExtractorTest extends LocalFileMetadataTestCase {
                 "/table/SSB.DATES.json", //
                 "/table/SSB.PART.json", //
                 "/table/SSB.SUPPLIER.json", //
-                "/table/SSB.V_LINEORDER.json"
+                "/table/SSB.V_LINEORDER.json", //
+                "/table/DEFAULT.STREAMING_V2_TABLE.json", //
+                "/table/DEFAULT.STREAMING_V2_USER_INFO_TABLE.json"
         );
         Set<String> expectTblExd = Sets.newHashSet(
                 "/table_exd/DEFAULT.TEST_COUNTRY.json", //

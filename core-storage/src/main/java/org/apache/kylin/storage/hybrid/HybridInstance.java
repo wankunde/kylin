@@ -26,6 +26,8 @@ import java.util.Set;
 import org.apache.kylin.common.KylinConfig;
 import org.apache.kylin.common.persistence.ResourceStore;
 import org.apache.kylin.common.persistence.RootPersistentEntity;
+import org.apache.kylin.cube.CubeInstance;
+import org.apache.kylin.cube.CubeManager;
 import org.apache.kylin.metadata.model.ColumnDesc;
 import org.apache.kylin.metadata.model.DataModelDesc;
 import org.apache.kylin.metadata.model.MeasureDesc;
@@ -62,7 +64,7 @@ public class HybridInstance extends RootPersistentEntity implements IRealization
 
         return hybridInstance;
     }
-    
+
     // ============================================================================
 
     @JsonIgnore
@@ -90,7 +92,7 @@ public class HybridInstance extends RootPersistentEntity implements IRealization
     public String resourceName() {
         return name;
     }
-    
+
     public List<RealizationEntry> getRealizationEntries() {
         return realizationEntries;
     }
@@ -108,7 +110,7 @@ public class HybridInstance extends RootPersistentEntity implements IRealization
                 return;
 
             if (realizationEntries == null || realizationEntries.size() == 0)
-                throw new IllegalArgumentException();
+                return;
 
             RealizationRegistry registry = RealizationRegistry.getInstance(config);
             List<IRealization> realizationList = Lists.newArrayList();
@@ -222,8 +224,15 @@ public class HybridInstance extends RootPersistentEntity implements IRealization
 
     @Override
     public DataModelDesc getModel() {
-        if (this.getLatestRealization() != null)
+        if (this.getLatestRealization() != null) {
             return this.getLatestRealization().getModel();
+        }
+        // all included cubes are disabled
+        if (this.getRealizationEntries() != null && this.getRealizationEntries().size() > 0) {
+            String cubeName = this.getRealizationEntries().get(0).getRealization();
+            CubeInstance cubeInstance = CubeManager.getInstance(config).getCube(cubeName);
+            return cubeInstance.getModel();
+        }
         return null;
     }
 
@@ -301,7 +310,7 @@ public class HybridInstance extends RootPersistentEntity implements IRealization
 
     public IRealization[] getRealizations() {
         init();
-        return realizations;
+        return realizations == null ? new IRealization[0] : realizations;
     }
 
     public String getResourcePath() {

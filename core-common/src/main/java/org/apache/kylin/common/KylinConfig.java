@@ -6,15 +6,15 @@
  * to you under the Apache License, Version 2.0 (the
  * "License"); you may not use this file except in compliance
  * with the License.  You may obtain a copy of the License at
- * 
+ *
  *     http://www.apache.org/licenses/LICENSE-2.0
- * 
+ *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
-*/
+ */
 
 package org.apache.kylin.common;
 
@@ -30,6 +30,7 @@ import java.lang.reflect.Method;
 import java.net.URL;
 import java.nio.ByteOrder;
 import java.nio.charset.Charset;
+import java.nio.charset.StandardCharsets;
 import java.util.Collection;
 import java.util.Map;
 import java.util.Properties;
@@ -38,8 +39,10 @@ import java.util.concurrent.ConcurrentHashMap;
 import org.apache.commons.io.IOUtils;
 import org.apache.commons.lang.StringUtils;
 import org.apache.kylin.common.restclient.RestClient;
+import org.apache.kylin.common.threadlocal.InternalThreadLocal;
 import org.apache.kylin.common.util.ClassUtil;
 import org.apache.kylin.common.util.OrderedProperties;
+import org.apache.zookeeper.Shell;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -50,6 +53,7 @@ import com.google.common.base.Preconditions;
 public class KylinConfig extends KylinConfigBase {
     private static final long serialVersionUID = 1L;
     private static final Logger logger = LoggerFactory.getLogger(KylinConfig.class);
+    private static final String METADATA_URI_PREFIX = "Metadata uri : ";
 
     /**
      * Kylin properties file name
@@ -61,20 +65,23 @@ public class KylinConfig extends KylinConfigBase {
     // static cached instances
     private static KylinConfig SYS_ENV_INSTANCE = null;
 
+    // static default Ordered Properties, only need load from classpath once
+    private static OrderedProperties defaultOrderedProperties = new OrderedProperties();
+
     // thread-local instances, will override SYS_ENV_INSTANCE
-    private static transient ThreadLocal<KylinConfig> THREAD_ENV_INSTANCE = new ThreadLocal<>();
+    private static transient InternalThreadLocal<KylinConfig> THREAD_ENV_INSTANCE = new InternalThreadLocal<>();
 
     static {
         /*
          * Make Calcite to work with Unicode.
-         * 
+         *
          * Sets default char set for string literals in SQL and row types of
          * RelNode. This is more a label used to compare row type equality. For
          * both SQL string and row record, they are passed to Calcite in String
          * object and does not require additional codec.
-         * 
+         *
          * Ref SaffronProperties.defaultCharset
-         * Ref SqlUtil.translateCharacterSetName() 
+         * Ref SqlUtil.translateCharacterSetName()
          * Ref NlsString constructor()
          */
         // copied from org.apache.calcite.util.ConversionUtil.NATIVE_UTF16_CHARSET_NAME
@@ -82,6 +89,35 @@ public class KylinConfig extends KylinConfigBase {
         System.setProperty("saffron.default.charset", NATIVE_UTF16_CHARSET_NAME);
         System.setProperty("saffron.default.nationalcharset", NATIVE_UTF16_CHARSET_NAME);
         System.setProperty("saffron.default.collation.name", NATIVE_UTF16_CHARSET_NAME + "$en_US");
+
+    }
+
+    /**
+     * Build default ordered properties from classpath, due to those files exist in core-common.jar, no need to load them each time.
+     */
+    private static void buildDefaultOrderedProperties() {
+        // 1. load default configurations from classpath.
+        // we have a kylin-defaults.properties in kylin/core-common/src/main/resources
+        try{
+            URL resource = Thread.currentThread().getContextClassLoader().getResource(KYLIN_DEFAULT_CONF_PROPERTIES_FILE);
+            Preconditions.checkNotNull(resource);
+            logger.info("Loading kylin-defaults.properties from {}", resource.getPath());
+            loadPropertiesFromInputStream(resource.openStream(), defaultOrderedProperties);
+
+            // 2. load additional default configurations from classpath.
+            // This is old logic, will load kylin-defaults(0~9).properties in kylin/core-common/src/main/resources
+            // Suggest remove this logic if no needed.
+            for (int i = 0; i < 10; i++) {
+                String fileName = "kylin-defaults" + (i) + ".properties";
+                URL additionalResource = Thread.currentThread().getContextClassLoader().getResource(fileName);
+                if (additionalResource != null) {
+                    logger.info("Loading {} from {} ", fileName, additionalResource.getPath());
+                    loadPropertiesFromInputStream(additionalResource.openStream(), defaultOrderedProperties);
+                }
+            }
+        } catch (IOException e) {
+            throw new RuntimeException(e);
+        }
     }
 
     public static KylinConfig getInstanceFromEnv() {
@@ -93,6 +129,10 @@ public class KylinConfig extends KylinConfigBase {
 
             if (SYS_ENV_INSTANCE == null) {
                 try {
+                    //build default ordered properties will only be called once.
+                    //This logic no need called by CoProcessor due to it didn't call getInstanceFromEnv.
+                    buildDefaultOrderedProperties();
+
                     config = new KylinConfig();
                     config.reloadKylinConfig(buildSiteProperties());
 
@@ -113,7 +153,7 @@ public class KylinConfig extends KylinConfigBase {
             logger.info("Destroy KylinConfig");
             dumpStackTrace();
             SYS_ENV_INSTANCE = null;
-            THREAD_ENV_INSTANCE = new ThreadLocal<>();
+            THREAD_ENV_INSTANCE = new InternalThreadLocal<>();
         }
     }
 
@@ -145,8 +185,9 @@ public class KylinConfig extends KylinConfigBase {
 
         try {
             File file = new File(metaUri);
-            if (file.exists() || metaUri.contains("/")) {
-                if (file.exists() == false) {
+            // for the developers using windows, without this condition, it will never find the file
+            if (file.exists() || metaUri.contains("/") || Shell.WINDOWS) {
+                if (!file.exists()) {
                     file.mkdirs();
                 }
                 if (file.isDirectory()) {
@@ -156,20 +197,20 @@ public class KylinConfig extends KylinConfigBase {
                         return UriType.PROPERTIES_FILE;
                     } else {
                         throw new IllegalStateException(
-                                "Metadata uri : " + metaUri + " is a local file but not kylin.properties");
+                                METADATA_URI_PREFIX + metaUri + " is a local file but not kylin.properties");
                     }
                 } else {
                     throw new IllegalStateException(
-                            "Metadata uri : " + metaUri + " looks like a file but it's neither a file nor a directory");
+                            METADATA_URI_PREFIX + metaUri + " looks like a file but it's neither a file nor a directory");
                 }
             } else {
                 if (RestClient.matchFullRestPattern(metaUri))
                     return UriType.REST_ADDR;
                 else
-                    throw new IllegalStateException("Metadata uri : " + metaUri + " is not a valid REST URI address");
+                    throw new IllegalStateException(METADATA_URI_PREFIX + metaUri + " is not a valid REST URI address");
             }
         } catch (Exception e) {
-            throw new IllegalStateException("Metadata uri : " + metaUri + " is not recognized", e);
+            throw new IllegalStateException(METADATA_URI_PREFIX + metaUri + " is not recognized", e);
         }
     }
 
@@ -224,7 +265,7 @@ public class KylinConfig extends KylinConfigBase {
                 try {
                     KylinConfig config = new KylinConfig();
                     config.reloadKylinConfig(prop);
-                    logger.info("Resetting SYS_ENV_INSTANCE by a input stream: " + System.identityHashCode(config));
+                    logger.info("Resetting SYS_ENV_INSTANCE by a input stream: {}", System.identityHashCode(config));
                     SYS_ENV_INSTANCE = config;
                 } catch (IllegalArgumentException e) {
                     throw new IllegalStateException("Failed to find KylinConfig ", e);
@@ -243,7 +284,7 @@ public class KylinConfig extends KylinConfigBase {
     public static SetAndUnsetThreadLocalConfig setAndUnsetThreadLocalConfig(KylinConfig config) {
         return new SetAndUnsetThreadLocalConfig(config);
     }
-    
+
     public static class SetAndUnsetThreadLocalConfig implements AutoCloseable {
 
         public SetAndUnsetThreadLocalConfig(KylinConfig config) {
@@ -284,7 +325,7 @@ public class KylinConfig extends KylinConfigBase {
     static File getSitePropertiesFile() {
         String kylinConfHome = System.getProperty(KYLIN_CONF);
         if (!StringUtils.isEmpty(kylinConfHome)) {
-            logger.info("Use KYLIN_CONF=" + kylinConfHome);
+            logger.info("Use KYLIN_CONF={}", kylinConfHome);
             return existFile(kylinConfHome);
         }
 
@@ -294,6 +335,7 @@ public class KylinConfig extends KylinConfigBase {
         if (StringUtils.isEmpty(kylinHome))
             throw new KylinConfigCannotInitException("Didn't find KYLIN_CONF or KYLIN_HOME, please set one of them");
 
+        logger.info("Use KYLIN_HOME={}", kylinHome);
         String path = kylinHome + File.separator + "conf";
         return existFile(path);
     }
@@ -325,28 +367,18 @@ public class KylinConfig extends KylinConfigBase {
     private static OrderedProperties buildSiteOrderedProps() {
 
         try {
-            // 1. load default configurations from classpath. 
-            // we have a kylin-defaults.properties in kylin/core-common/src/main/resources 
-            URL resource = Thread.currentThread().getContextClassLoader().getResource("kylin-defaults.properties");
-            Preconditions.checkNotNull(resource);
-            logger.info("Loading kylin-defaults.properties from {}", resource.getPath());
+            // 1. load default configurations from classpath.
+            // we have kylin-defaults.properties in kylin/core-common/src/main/resources
+            // Load them each time will caused thread block when multiple query request to Kylin
             OrderedProperties orderedProperties = new OrderedProperties();
-            loadPropertiesFromInputStream(resource.openStream(), orderedProperties);
-
-            for (int i = 0; i < 10; i++) {
-                String fileName = "kylin-defaults" + (i) + ".properties";
-                URL additionalResource = Thread.currentThread().getContextClassLoader().getResource(fileName);
-                if (additionalResource != null) {
-                    logger.info("Loading {} from {} ", fileName, additionalResource.getPath());
-                    loadPropertiesFromInputStream(additionalResource.openStream(), orderedProperties);
-                }
-            }
+            orderedProperties.putAll(defaultOrderedProperties);
 
             // 2. load site conf, to keep backward compatibility it's still named kylin.properties
             // actually it's better to be named kylin-site.properties
             File propFile = getSitePropertiesFile();
             if (propFile == null || !propFile.exists()) {
-                logger.error("fail to locate " + KYLIN_CONF_PROPERTIES_FILE);
+                logger.error("fail to locate " + KYLIN_CONF_PROPERTIES_FILE + " at '"
+                        + (propFile != null ? propFile.getAbsolutePath() : "") + "'");
                 throw new RuntimeException("fail to locate " + KYLIN_CONF_PROPERTIES_FILE);
             }
             loadPropertiesFromInputStream(new FileInputStream(propFile), orderedProperties);
@@ -368,9 +400,8 @@ public class KylinConfig extends KylinConfigBase {
      */
     private static void loadPropertiesFromInputStream(InputStream inputStream, OrderedProperties properties) {
         Preconditions.checkNotNull(properties);
-        BufferedReader confReader = null;
-        try {
-            confReader = new BufferedReader(new InputStreamReader(inputStream, "UTF-8"));
+
+        try (BufferedReader confReader = new BufferedReader(new InputStreamReader(inputStream, StandardCharsets.UTF_8))) {
             OrderedProperties temp = new OrderedProperties();
             temp.load(confReader);
             temp = BCC.check(temp);
@@ -378,8 +409,6 @@ public class KylinConfig extends KylinConfigBase {
             properties.putAll(temp);
         } catch (Exception e) {
             throw new RuntimeException(e);
-        } finally {
-            IOUtils.closeQuietly(confReader);
         }
     }
 
@@ -399,8 +428,8 @@ public class KylinConfig extends KylinConfigBase {
     }
 
     // ============================================================================
-    
-    Map<Class, Object> managersCache = new ConcurrentHashMap<>();
+
+    transient Map<Class, Object> managersCache = new ConcurrentHashMap<>();
 
     private KylinConfig() {
         super();
@@ -414,19 +443,23 @@ public class KylinConfig extends KylinConfigBase {
         KylinConfig base = base();
         if (base != this)
             return base.getManager(clz);
-        
+
+        if (managersCache == null) {
+            managersCache = new ConcurrentHashMap<>();
+        }
+
         Object mgr = managersCache.get(clz);
         if (mgr != null)
             return (T) mgr;
-        
+
         synchronized (clz) {
             mgr = managersCache.get(clz);
             if (mgr != null)
                 return (T) mgr;
-            
+
             try {
-                logger.info("Creating new manager instance of " + clz);
-                
+                logger.info("Creating new manager instance of {}", clz);
+
                 // new manager via static Manager.newInstance()
                 Method method = clz.getDeclaredMethod("newInstance", KylinConfig.class);
                 method.setAccessible(true); // override accessibility
@@ -438,14 +471,14 @@ public class KylinConfig extends KylinConfigBase {
         }
         return (T) mgr;
     }
-    
+
     public void clearManagers() {
         KylinConfig base = base();
         if (base != this) {
             base.clearManagers();
             return;
         }
-        
+
         managersCache.clear();
     }
 
@@ -456,18 +489,14 @@ public class KylinConfig extends KylinConfigBase {
         return copy;
     }
 
-    public String exportAllToString() throws IOException {
+    public String exportAllToString() {
         final Properties allProps = getProperties(null);
         final OrderedProperties orderedProperties = KylinConfig.buildSiteOrderedProps();
 
         for (Map.Entry<Object, Object> entry : allProps.entrySet()) {
             String key = entry.getKey().toString();
             String value = entry.getValue().toString();
-            if (!orderedProperties.containsProperty(key)) {
-                orderedProperties.setProperty(key, value);
-            } else if (!orderedProperties.getProperty(key).equalsIgnoreCase(value)) {
-                orderedProperties.setProperty(key, value);
-            }
+            orderedProperties.setProperty(key, value);
         }
 
         final StringBuilder sb = new StringBuilder();
@@ -478,7 +507,7 @@ public class KylinConfig extends KylinConfigBase {
 
     }
 
-    public String exportToString(Collection<String> propertyKeys) throws IOException {
+    public String exportToString(Collection<String> propertyKeys) {
         Properties filteredProps = getProperties(propertyKeys);
         OrderedProperties orderedProperties = KylinConfig.buildSiteOrderedProps();
 
@@ -496,19 +525,15 @@ public class KylinConfig extends KylinConfigBase {
     }
 
     public void exportToFile(File file) throws IOException {
-        FileOutputStream fos = null;
-        try {
-            fos = new FileOutputStream(file);
+        try (FileOutputStream fos = new FileOutputStream(file)) {
             getAllProperties().store(fos, file.getAbsolutePath());
-        } finally {
-            IOUtils.closeQuietly(fos);
         }
     }
 
     public synchronized void reloadFromSiteProperties() {
         reloadKylinConfig(buildSiteProperties());
     }
-    
+
     public KylinConfig base() {
         return this;
     }

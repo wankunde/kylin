@@ -20,10 +20,15 @@ package org.apache.kylin.common.util;
 
 import java.io.UnsupportedEncodingException;
 import java.nio.ByteBuffer;
+import java.util.Locale;
 
 import com.google.common.primitives.Shorts;
 
 public class BytesUtil {
+
+    private BytesUtil() {
+        throw new IllegalStateException("Class BytesUtil is an utility class !");
+    }
 
     public static final byte[] EMPTY_BYTE_ARRAY = new byte[0];
 
@@ -176,6 +181,22 @@ public class BytesUtil {
         byte[] r = new byte[end - start];
         System.arraycopy(bytes, start, r, 0, r.length);
         return r;
+    }
+
+    public static byte[] mergeBytes(byte[] bytes1, byte[] bytes2) {
+        if (bytes1 == null && bytes2 == null) {
+            throw new NullPointerException();
+        }
+        if (bytes1 == null) {
+            return bytes2;
+        }
+        if (bytes2 == null) {
+            return bytes1;
+        }
+        byte[] bytes = new byte[bytes1.length + bytes2.length];
+        System.arraycopy(bytes1, 0, bytes, 0, bytes1.length);
+        System.arraycopy(bytes2, 0, bytes, bytes1.length, bytes2.length);
+        return bytes;
     }
 
     public static int compareBytes(byte[] src, int srcOffset, byte[] dst, int dstOffset, int length) {
@@ -452,9 +473,24 @@ public class BytesUtil {
         StringBuilder sb = new StringBuilder(length * 4);
         for (int i = 0; i < length; i++) {
             int b = array[offset + i];
-            sb.append(String.format("\\x%02X", b & 0xFF));
+            sb.append(String.format(Locale.ROOT, "\\x%02X", b & 0xFF));
         }
         return sb.toString();
+    }
+
+    /**
+     *
+     * @param hex String value of a byte array in hex, e.g, "\\x00\\x0A";
+     * @return the byte array that the hex represented.
+     */
+    public static byte[] fromHex(String hex) {
+        byte[] b = new byte[hex.length() / 4];
+        for (int i = 0; i < b.length; i++) {
+            int index = i * 4;
+            int v = Integer.parseInt(hex.substring(index + 2, index + 4), 16);
+            b[i] = (byte) v;
+        }
+        return b;
     }
 
 }

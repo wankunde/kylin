@@ -18,20 +18,21 @@
 
 package org.apache.kylin.engine.mr.steps;
 
+import java.util.Locale;
+
 import org.apache.commons.cli.Options;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.io.Text;
 import org.apache.hadoop.mapreduce.Job;
 import org.apache.hadoop.mapreduce.lib.input.FileInputFormat;
 import org.apache.hadoop.mapreduce.lib.input.SequenceFileInputFormat;
-import org.apache.hadoop.mapreduce.lib.output.FileOutputFormat;
-import org.apache.hadoop.mapreduce.lib.output.SequenceFileOutputFormat;
 import org.apache.kylin.common.KylinConfig;
 import org.apache.kylin.cube.CubeInstance;
 import org.apache.kylin.cube.CubeManager;
 import org.apache.kylin.cube.CubeSegment;
 import org.apache.kylin.engine.mr.common.AbstractHadoopJob;
 import org.apache.kylin.engine.mr.common.BatchConstants;
+import org.apache.kylin.engine.mr.common.ConvergeCuboidDataUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -51,7 +52,7 @@ public class FilterRecommendCuboidDataJob extends AbstractHadoopJob {
             parseOptions(options, args);
 
             job = Job.getInstance(getConf(), getOptionValue(OPTION_JOB_NAME));
-            String cubeName = getOptionValue(OPTION_CUBE_NAME).toUpperCase();
+            String cubeName = getOptionValue(OPTION_CUBE_NAME).toUpperCase(Locale.ROOT);
             String segmentID = getOptionValue(OPTION_SEGMENT_ID);
             Path input = new Path(getOptionValue(OPTION_INPUT_PATH));
             Path output = new Path(getOptionValue(OPTION_OUTPUT_PATH));
@@ -67,25 +68,21 @@ public class FilterRecommendCuboidDataJob extends AbstractHadoopJob {
 
             // Mapper
             job.setMapperClass(FilterRecommendCuboidDataMapper.class);
-
-            // Reducer
-            job.setNumReduceTasks(0);
-
-            job.setOutputKeyClass(Text.class);
-            job.setOutputValueClass(Text.class);
+            job.setMapOutputKeyClass(Text.class);
+            job.setMapOutputValueClass(Text.class);
 
             // Input
             job.setInputFormatClass(SequenceFileInputFormat.class);
             FileInputFormat.setInputPaths(job, input);
-            // Output
-            job.setOutputFormatClass(SequenceFileOutputFormat.class);
-            FileOutputFormat.setOutputPath(job, output);
+
+            // Reducer
+            ConvergeCuboidDataUtil.setupReducer(job, originalSegment, output);
 
             // set job configuration
             job.getConfiguration().set(BatchConstants.CFG_CUBE_NAME, cubeName);
             job.getConfiguration().set(BatchConstants.CFG_CUBE_SEGMENT_ID, segmentID);
             // add metadata to distributed cache
-            attachSegmentMetadataWithDict(originalSegment, job.getConfiguration());
+            attachSegmentMetadata(originalSegment, job.getConfiguration(), false, false);
 
             this.deletePath(job.getConfiguration(), output);
 

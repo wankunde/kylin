@@ -23,11 +23,13 @@ import static org.apache.kylin.cube.cuboid.CuboidModeEnum.CURRENT;
 import static org.apache.kylin.cube.cuboid.CuboidModeEnum.RECOMMEND;
 
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
 import org.apache.commons.lang.StringUtils;
+import com.google.common.collect.Maps;
 import org.apache.kylin.common.KylinConfig;
 import org.apache.kylin.common.KylinConfigExt;
 import org.apache.kylin.common.persistence.ResourceStore;
@@ -124,6 +126,9 @@ public class CubeInstance extends RootPersistentEntity implements IRealization, 
     @JsonProperty("cuboid_last_optimized")
     private long cuboidLastOptimized;
 
+    @JsonProperty("snapshots")
+    private Map<String, String> snapshots = Maps.newHashMap();
+
     // cuboid scheduler lazy built
     transient private CuboidScheduler cuboidScheduler;
 
@@ -180,10 +185,18 @@ public class CubeInstance extends RootPersistentEntity implements IRealization, 
         return segments.getMergingSegments(mergedSegment);
     }
 
+    public CubeSegment getOriginalSegmentToRefresh(CubeSegment refreshedSegment) {
+        return getOriginalSegment(refreshedSegment);
+    }
+
     public CubeSegment getOriginalSegmentToOptimize(CubeSegment optimizedSegment) {
+        return getOriginalSegment(optimizedSegment);
+    }
+
+    private CubeSegment getOriginalSegment(CubeSegment toSegment) {
         for (CubeSegment segment : this.getSegments(SegmentStatusEnum.READY)) {
-            if (!optimizedSegment.equals(segment) //
-                    && optimizedSegment.getSegRange().equals(segment.getSegRange())) {
+            if (!toSegment.equals(segment) //
+                    && toSegment.getSegRange().equals(segment.getSegRange())) {
                 return segment;
             }
         }
@@ -235,6 +248,29 @@ public class CubeInstance extends RootPersistentEntity implements IRealization, 
     @Override
     public String toString() {
         return getCanonicalName();
+    }
+
+    @Override
+    public int hashCode() {
+        final int prime = 31;
+        int result = super.hashCode();
+        result = prime * result + ((name == null) ? 0 : name.hashCode());
+        return result;
+    }
+
+    @Override
+    public boolean equals(Object obj) {
+        if (this == obj)
+            return true;
+        if (obj == null || getClass() != obj.getClass())
+            return false;
+        CubeInstance other = (CubeInstance) obj;
+        if (name == null) {
+            if (other.name != null)
+                return false;
+        } else if (!name.equals(other.name))
+            return false;
+        return true;
     }
 
     // ============================================================================
@@ -424,7 +460,7 @@ public class CubeInstance extends RootPersistentEntity implements IRealization, 
         byte[] uncompressed;
         try {
             uncompressed = CompressionUtils.decompress(cuboidBytes);
-            String str = new String(uncompressed, "UTF-8");
+            String str = new String(uncompressed, StandardCharsets.UTF_8);
             TypeReference<Map<Long, Long>> typeRef = new TypeReference<Map<Long, Long>>() {
             };
             Map<Long, Long> cuboids = JsonUtil.readValue(str, typeRef);
@@ -444,7 +480,7 @@ public class CubeInstance extends RootPersistentEntity implements IRealization, 
 
         try {
             String str = JsonUtil.writeValueAsString(cuboids);
-            byte[] compressed = CompressionUtils.compress(str.getBytes("UTF-8"));
+            byte[] compressed = CompressionUtils.compress(str.getBytes(StandardCharsets.UTF_8));
             cuboidBytes = compressed;
         } catch (IOException e) {
             throw new RuntimeException(e);
@@ -457,7 +493,7 @@ public class CubeInstance extends RootPersistentEntity implements IRealization, 
         byte[] uncompressed;
         try {
             uncompressed = CompressionUtils.decompress(cuboidBytesRecommend);
-            String str = new String(uncompressed, "UTF-8");
+            String str = new String(uncompressed, StandardCharsets.UTF_8);
             TypeReference<Set<Long>> typeRef = new TypeReference<Set<Long>>() {
             };
             Set<Long> cuboids = JsonUtil.readValue(str, typeRef);
@@ -476,7 +512,7 @@ public class CubeInstance extends RootPersistentEntity implements IRealization, 
         }
         try {
             String str = JsonUtil.writeValueAsString(cuboids);
-            byte[] compressed = CompressionUtils.compress(str.getBytes("UTF-8"));
+            byte[] compressed = CompressionUtils.compress(str.getBytes(StandardCharsets.UTF_8));
             cuboidBytesRecommend = compressed;
         } catch (IOException e) {
             throw new RuntimeException(e);
@@ -506,7 +542,8 @@ public class CubeInstance extends RootPersistentEntity implements IRealization, 
         if (result.capable) {
             result.cost = getCost(digest);
             for (CapabilityInfluence i : result.influences) {
-                result.cost *= (i.suggestCostMultiplier() == 0) ? 1.0 : i.suggestCostMultiplier();
+                double suggestCost = i.suggestCostMultiplier();
+                result.cost *= (suggestCost == 0) ? 1.0 : suggestCost;
             }
         } else {
             result.cost = -1;
@@ -575,7 +612,7 @@ public class CubeInstance extends RootPersistentEntity implements IRealization, 
             return false;
 
         return this.getConfig().isAutoMergeEnabled() && this.getDescriptor().getAutoMergeTimeRanges() != null
-                && this.getDescriptor().getAutoMergeTimeRanges().length > 0;
+                && this.getDescriptor().getAutoMergeTimeRanges().length > 0 && this.getStatus() == RealizationStatusEnum.READY;
     }
 
     public SegmentRange autoMergeCubeSegments() throws IOException {
@@ -619,7 +656,7 @@ public class CubeInstance extends RootPersistentEntity implements IRealization, 
     }
 
     // For JSON serialization of this attribute, use CubeInstanceResponse
-    public long getInputRecordSizeMB() {
+    public long getInputRecordSizeBytes() {
         long sizeRecordSize = 0L;
 
         for (CubeSegment cubeSegment : this.getSegments(SegmentStatusEnum.READY)) {
@@ -652,6 +689,20 @@ public class CubeInstance extends RootPersistentEntity implements IRealization, 
         return getDescriptor().getEngineType();
     }
 
+    public Map<String, String> getSnapshots() {
+        if (snapshots == null)
+            snapshots = Maps.newHashMap();
+        return snapshots;
+    }
+
+    public String getSnapshotResPath(String tableName) {
+        return getSnapshots().get(tableName);
+    }
+
+    public void putSnapshotResPath(String table, String snapshotResPath) {
+        getSnapshots().put(table, snapshotResPath);
+    }
+
     public static CubeInstance getCopyOf(CubeInstance cubeInstance) {
         CubeInstance newCube = new CubeInstance();
         newCube.setName(cubeInstance.getName());
@@ -664,6 +715,16 @@ public class CubeInstance extends RootPersistentEntity implements IRealization, 
         newCube.setCreateTimeUTC(System.currentTimeMillis());
         newCube.updateRandomUuid();
         return newCube;
+    }
+
+    public static CubeSegment findSegmentWithJobId(String jobID, CubeInstance cubeInstance) {
+        for (CubeSegment segment : cubeInstance.getSegments()) {
+            String lastBuildJobID = segment.getLastBuildJobID();
+            if (lastBuildJobID != null && lastBuildJobID.equalsIgnoreCase(jobID)) {
+                return segment;
+            }
+        }
+        throw new IllegalStateException("No segment's last build job ID equals " + jobID);
     }
 
 }

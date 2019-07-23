@@ -24,6 +24,7 @@ import java.util.Collection;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
@@ -67,11 +68,11 @@ public class ProjectManager {
 
     private KylinConfig config;
     private ProjectL2Cache l2Cache;
-    
-    // project name => ProjrectInstance
+
+    // project name => ProjectInstance
     private CaseInsensitiveStringCache<ProjectInstance> projectMap;
     private CachedCrudAssist<ProjectInstance> crud;
-    
+
     // protects concurrent operations around the cached map, to avoid for example
     // writing an entity in the middle of reloading it (dirty read)
     private AutoReadWriteLock prjMapLock = new AutoReadWriteLock();
@@ -113,8 +114,8 @@ public class ProjectManager {
         }
     }
 
-    public void clearL2Cache() {
-        l2Cache.clear();
+    public void clearL2Cache(String projectname) {
+        l2Cache.clear(projectname);
     }
 
     public void reloadProjectL2Cache(String project) {
@@ -124,8 +125,15 @@ public class ProjectManager {
     public ProjectInstance reloadProjectQuietly(String project) throws IOException {
         try (AutoLock lock = prjMapLock.lockForWrite()) {
             ProjectInstance prj = crud.reloadQuietly(project);
-            reloadProjectL2Cache(project);
+            clearL2Cache(project);
             return prj;
+        }
+    }
+
+    public void reloadAll() throws IOException {
+        try (AutoLock lock = prjMapLock.lockForWrite()) {
+            crud.reloadAll();
+            clearL2Cache(null);
         }
     }
 
@@ -209,7 +217,7 @@ public class ProjectManager {
             crud.delete(projectInstance);
             BadQueryHistoryManager.getInstance(config).removeBadQueryHistory(projectName);
 
-            clearL2Cache();
+            clearL2Cache(projectName);
             return projectInstance;
         }
     }
@@ -233,7 +241,7 @@ public class ProjectManager {
     public void removeProjectLocal(String proj) {
         try (AutoLock lock = prjMapLock.lockForWrite()) {
             projectMap.removeLocal(proj);
-            clearL2Cache();
+            clearL2Cache(proj);
         }
     }
 
@@ -246,7 +254,7 @@ public class ProjectManager {
                 throw new IllegalArgumentException("Project " + newProjectName + " does not exist.");
             }
             prj.addModel(modelName);
-            
+
             return save(prj);
         }
     }
@@ -302,7 +310,7 @@ public class ProjectManager {
             for (String tableId : tableIdentities) {
                 TableDesc table = metaMgr.getTableDesc(tableId, projectName);
                 if (table == null) {
-                    throw new IllegalStateException("Cannot find table '" + table + "' in metadata manager");
+                    throw new IllegalStateException("Cannot find table '" + tableId + "' in metadata manager");
                 }
                 projectInstance.addTable(table.getIdentity());
             }
@@ -311,13 +319,13 @@ public class ProjectManager {
         }
     }
 
-    public void removeTableDescFromProject(String tableIdentities, String projectName) throws IOException {
+    public void removeTableDescFromProject(String tableId, String projectName) throws IOException {
         try (AutoLock lock = prjMapLock.lockForWrite()) {
             TableMetadataManager metaMgr = getTableManager();
             ProjectInstance projectInstance = getProject(projectName);
-            TableDesc table = metaMgr.getTableDesc(tableIdentities, projectName);
+            TableDesc table = metaMgr.getTableDesc(tableId, projectName);
             if (table == null) {
-                throw new IllegalStateException("Cannot find table '" + table + "' in metadata manager");
+                throw new IllegalStateException("Cannot find table '" + tableId + "' in metadata manager");
             }
 
             projectInstance.removeTable(table.getIdentity());
@@ -355,10 +363,22 @@ public class ProjectManager {
             save(projectInstance);
         }
     }
-    
+
+    /**
+     * change the last project modify time
+     * @param projectName
+     * @throws IOException
+     */
+    public void touchProject(String projectName) throws IOException {
+        try (AutoLock lock = prjMapLock.lockForWrite()) {
+            ProjectInstance projectInstance = getProject(projectName);
+            save(projectInstance);
+        }
+    }
+
     private ProjectInstance save(ProjectInstance prj) throws IOException {
         crud.save(prj);
-        clearL2Cache();
+        clearL2Cache(prj.getName());
         return prj;
     }
 
@@ -448,15 +468,15 @@ public class ProjectManager {
     }
 
     public Set<IRealization> getRealizationsByTable(String project, String tableName) {
-        return l2Cache.getRealizationsByTable(project, tableName.toUpperCase());
+        return l2Cache.getRealizationsByTable(project, tableName.toUpperCase(Locale.ROOT));
     }
 
     public List<MeasureDesc> listEffectiveRewriteMeasures(String project, String factTable) {
-        return l2Cache.listEffectiveRewriteMeasures(project, factTable.toUpperCase(), true);
+        return l2Cache.listEffectiveRewriteMeasures(project, factTable.toUpperCase(Locale.ROOT), true);
     }
 
     public List<MeasureDesc> listEffectiveMeasures(String project, String factTable) {
-        return l2Cache.listEffectiveRewriteMeasures(project, factTable.toUpperCase(), false);
+        return l2Cache.listEffectiveRewriteMeasures(project, factTable.toUpperCase(Locale.ROOT), false);
     }
 
     KylinConfig getConfig() {

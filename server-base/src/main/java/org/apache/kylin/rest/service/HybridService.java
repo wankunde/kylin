@@ -43,7 +43,7 @@ public class HybridService extends BasicService {
     @Autowired
     private AclEvaluate aclEvaluate;
 
-    public HybridInstance createHybridCube(String hybridName, String projectName, String modelName,
+    public HybridInstance createHybridInstance(String hybridName, String projectName, String modelName,
             String[] cubeNames) {
         aclEvaluate.checkProjectWritePermission(projectName);
         List<String> args = new ArrayList<String>();
@@ -66,7 +66,7 @@ public class HybridService extends BasicService {
         return getHybridInstance(hybridName);
     }
 
-    public HybridInstance updateHybridCube(String hybridName, String projectName, String modelName,
+    public HybridInstance updateHybridInstance(String hybridName, String projectName, String modelName,
             String[] cubeNames) {
         aclEvaluate.checkProjectWritePermission(projectName);
         List<String> args = new ArrayList<String>();
@@ -89,8 +89,8 @@ public class HybridService extends BasicService {
         return getHybridInstance(hybridName);
     }
 
-    public void deleteHybridCube(String hybridName, String projectName, String modelName) {
-        aclEvaluate.checkProjectWritePermission(projectName);
+    public void updateHybridCubeNoCheck(String hybridName, String projectName, String modelName,
+                                           String[] cubeNames) {
         List<String> args = new ArrayList<String>();
         args.add("-name");
         args.add(hybridName);
@@ -98,6 +98,25 @@ public class HybridService extends BasicService {
         args.add(projectName);
         args.add("-model");
         args.add(modelName);
+        args.add("-cubes");
+        args.add(StringUtils.join(cubeNames, ","));
+        args.add("-check");
+        args.add("false");
+        args.add("-action");
+        args.add("update");
+        try {
+            HybridCubeCLI.main(args.toArray(new String[args.size()]));
+        } catch (Exception e) {
+            logger.warn("Update Hybrid Failed", e);
+            throw e;
+        }
+    }
+
+    public void deleteHybridInstance(String hybridName, String projectName) {
+        aclEvaluate.checkProjectWritePermission(projectName);
+        List<String> args = new ArrayList<String>();
+        args.add("-name");
+        args.add(hybridName);
         args.add("-action");
         args.add("delete");
         try {

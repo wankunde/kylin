@@ -103,9 +103,10 @@ public class SourceManager {
         builder.append(config.getJdbcSourceConnectionUrl()).append('|');
         builder.append(config.getJdbcSourceDriver()).append('|');
         builder.append(config.getJdbcSourceUser()).append('|');
+        builder.append(config.getJdbcSourcePass()).append('|'); // In case password is wrong at the first time
         builder.append(config.getJdbcSourceFieldDelimiter()).append('|');
         builder.append(config.getJdbcSourceDialect()).append('|');
-        return builder.toString(); // jdbc password not needed, because url+user should be identical.
+        return builder.toString();
     }
 
     private ISource createSource(ISourceAware aware) {
@@ -140,8 +141,8 @@ public class SourceManager {
         });
     }
 
-    public static IReadableTable createReadableTable(TableDesc table) {
-        return getSource(table).createReadableTable(table);
+    public static IReadableTable createReadableTable(TableDesc table, String uuid) {
+        return getSource(table).createReadableTable(table, uuid);
     }
 
     public static <T> T createEngineAdapter(ISourceAware table, Class<T> engineInterface) {

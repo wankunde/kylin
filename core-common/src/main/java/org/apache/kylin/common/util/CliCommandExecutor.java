@@ -22,14 +22,17 @@ import java.io.BufferedReader;
 import java.io.File;
 import java.io.IOException;
 import java.io.InputStreamReader;
+import java.nio.charset.StandardCharsets;
 
 import org.apache.commons.io.FileUtils;
+import org.slf4j.LoggerFactory;
 
 /**
  * @author yangli9
  */
 public class CliCommandExecutor {
 
+    private static final org.slf4j.Logger logger = LoggerFactory.getLogger(CliCommandExecutor.class);
     private String remoteHost;
     private int port;
     private String remoteUser;
@@ -129,14 +132,26 @@ public class CliCommandExecutor {
         builder.redirectErrorStream(true);
         Process proc = builder.start();
 
-        BufferedReader reader = new BufferedReader(new InputStreamReader(proc.getInputStream()));
+        BufferedReader reader = new BufferedReader(
+                new InputStreamReader(proc.getInputStream(), StandardCharsets.UTF_8));
         String line;
         StringBuilder result = new StringBuilder();
-        while ((line = reader.readLine()) != null) {
+        while ((line = reader.readLine()) != null && !Thread.currentThread().isInterrupted()) {
             result.append(line).append('\n');
             if (logAppender != null) {
                 logAppender.log(line);
             }
+        }
+
+        if (Thread.interrupted()) {
+            logger.info("CliCommandExecutor is interruppted by other, kill the sub process: " + command);
+            proc.destroy();
+            try {
+                Thread.sleep(1000);
+            } catch (InterruptedException e) {
+                // do nothing
+            }
+            return Pair.newPair(1, "Killed");
         }
 
         try {

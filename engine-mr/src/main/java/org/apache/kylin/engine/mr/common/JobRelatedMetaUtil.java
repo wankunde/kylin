@@ -19,8 +19,11 @@
 package org.apache.kylin.engine.mr.common;
 
 import org.apache.kylin.common.KylinConfig;
+import org.apache.kylin.common.KylinConfigExt;
+import org.apache.kylin.common.persistence.AutoDeleteDirectory;
 import org.apache.kylin.common.persistence.RawResource;
 import org.apache.kylin.common.persistence.ResourceStore;
+import org.apache.kylin.common.persistence.ResourceTool;
 import org.apache.kylin.cube.CubeInstance;
 import org.apache.kylin.metadata.model.TableDesc;
 import org.apache.kylin.metadata.model.TableRef;
@@ -29,12 +32,17 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.File;
+import java.io.FileOutputStream;
 import java.io.IOException;
 import java.util.LinkedHashSet;
+import java.util.Properties;
 import java.util.Set;
 
 public class JobRelatedMetaUtil {
     private static final Logger logger = LoggerFactory.getLogger(JobRelatedMetaUtil.class);
+
+    private JobRelatedMetaUtil() {
+    }
 
     public static Set<String> collectCubeMetadata(CubeInstance cube) {
         // cube, model_desc, cube_desc, table
@@ -63,10 +71,35 @@ public class JobRelatedMetaUtil {
             RawResource res = from.getResource(path);
             if (res == null)
                 throw new IllegalStateException("No resource found at -- " + path);
-            to.putResource(path, res.inputStream, res.timestamp);
-            res.inputStream.close();
+            to.putResource(path, res.content(), res.lastModified());
+            res.content().close();
         }
 
         logger.debug("Dump resources to {} took {} ms", metaDir, System.currentTimeMillis() - startTime);
+    }
+
+    public static void dumpAndUploadKylinPropsAndMetadata(Set<String> dumpList, KylinConfigExt kylinConfig, String metadataUrl)
+            throws IOException {
+
+        try (AutoDeleteDirectory tmpDir = new AutoDeleteDirectory("kylin_job_meta", "");
+             AutoDeleteDirectory metaDir = tmpDir.child("meta")) {
+            // dump metadata
+            JobRelatedMetaUtil.dumpResources(kylinConfig, metaDir.getFile(), dumpList);
+
+            // dump metadata
+            dumpResources(kylinConfig, metaDir.getFile(), dumpList);
+
+            // write kylin.properties
+            Properties props = kylinConfig.exportToProperties();
+            props.setProperty("kylin.metadata.url", metadataUrl);
+            File kylinPropsFile = new File(metaDir.getFile(), "kylin.properties");
+            try (FileOutputStream os = new FileOutputStream(kylinPropsFile)) {
+                props.store(os, kylinPropsFile.getAbsolutePath());
+            }
+
+            KylinConfig dstConfig = KylinConfig.createKylinConfig(props);
+            //upload metadata
+            new ResourceTool().copy(KylinConfig.createInstanceFromUri(metaDir.getAbsolutePath()), dstConfig);
+        }
     }
 }

@@ -49,6 +49,7 @@ import org.apache.hadoop.hdfs.DFSConfigKeys;
 import org.apache.kylin.common.KylinConfig;
 import org.apache.kylin.common.StorageURL;
 import org.apache.kylin.common.lock.DistributedLock;
+import org.apache.kylin.common.threadlocal.InternalThreadLocal;
 import org.apache.kylin.common.util.HadoopUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -67,7 +68,7 @@ public class HBaseConnection {
 
     private static final Map<StorageURL, Configuration> configCache = new ConcurrentHashMap<StorageURL, Configuration>();
     private static final Map<StorageURL, Connection> connPool = new ConcurrentHashMap<StorageURL, Connection>();
-    private static final ThreadLocal<Configuration> configThreadLocal = new ThreadLocal<>();
+    private static final InternalThreadLocal<Configuration> configThreadLocal = new InternalThreadLocal<>();
 
     private static ExecutorService coprocessorPool = null;
 
@@ -236,6 +237,15 @@ public class HBaseConnection {
         FileSystem fs = HadoopUtil.getFileSystem(path, getCurrentHBaseConfiguration()); // Must be HBase's FS, not working FS
         return fs.makeQualified(path).toString();
     }
+
+    public static FileSystem getFileSystemInHBaseCluster(String inPath) {
+        Path path = new Path(inPath);
+        path = Path.getPathWithoutSchemeAndAuthority(path);
+
+        FileSystem fs = HadoopUtil.getFileSystem(path, getCurrentHBaseConfiguration()); // Must be HBase's FS, not working FS
+        return fs;
+    }
+
 
     // ============================================================================
 

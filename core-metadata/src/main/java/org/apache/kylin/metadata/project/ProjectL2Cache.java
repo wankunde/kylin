@@ -34,7 +34,6 @@ import org.apache.kylin.metadata.model.TableDesc;
 import org.apache.kylin.metadata.model.TblColRef;
 import org.apache.kylin.metadata.realization.IRealization;
 import org.apache.kylin.metadata.realization.RealizationRegistry;
-import org.apache.kylin.metadata.realization.RealizationType;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -59,8 +58,12 @@ class ProjectL2Cache {
         this.mgr = mgr;
     }
 
-    public void clear() {
-        projectCaches.clear();
+    public void clear(String projectname) {
+        if (projectname == null) {
+            projectCaches.clear();
+        } else {
+            projectCaches.remove(projectname);
+        }
     }
 
     public ExternalFilterDesc getExternalFilterDesc(String project, String extFilterName) {
@@ -229,12 +232,6 @@ class ProjectL2Cache {
                 logger.warn("Realization '" + entry + "' defined under project '" + project + "' is not found");
             }
 
-            //check if there's raw table parasite
-            //TODO: ugly impl here
-            IRealization parasite = registry.getRealization(RealizationType.INVERTED_INDEX, entry.getRealization());
-            if (parasite != null) {
-                projectCache.realizations.add(parasite);
-            }
         }
 
         for (IRealization realization : projectCache.realizations) {

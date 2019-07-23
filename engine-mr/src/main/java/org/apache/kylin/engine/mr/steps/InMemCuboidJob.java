@@ -18,6 +18,7 @@
 
 package org.apache.kylin.engine.mr.steps;
 
+import java.util.Locale;
 import org.apache.commons.cli.Options;
 import org.apache.hadoop.io.Text;
 import org.apache.hadoop.mapreduce.Job;
@@ -70,9 +71,10 @@ public class InMemCuboidJob extends AbstractHadoopJob {
             options.addOption(OPTION_SEGMENT_ID);
             options.addOption(OPTION_OUTPUT_PATH);
             options.addOption(OPTION_CUBING_JOB_ID);
+            options.addOption(OPTION_DICTIONARY_SHRUNKEN_PATH);
             parseOptions(options, args);
 
-            String cubeName = getOptionValue(OPTION_CUBE_NAME).toUpperCase();
+            String cubeName = getOptionValue(OPTION_CUBE_NAME).toUpperCase(Locale.ROOT);
             String segmentID = getOptionValue(OPTION_SEGMENT_ID);
             String output = getOptionValue(OPTION_OUTPUT_PATH);
 
@@ -88,6 +90,10 @@ public class InMemCuboidJob extends AbstractHadoopJob {
 
             job = Job.getInstance(getConf(), getOptionValue(OPTION_JOB_NAME));
             job.getConfiguration().set(BatchConstants.ARG_CUBING_JOB_ID, cubingJobId);
+            String shrunkenDictPath = getOptionValue(OPTION_DICTIONARY_SHRUNKEN_PATH);
+            if (shrunkenDictPath != null) {
+                job.getConfiguration().set(BatchConstants.ARG_SHRUNKEN_DICT_PATH, shrunkenDictPath);
+            }
             logger.info("Starting: " + job.getJobName());
 
             setJobClasspath(job, cube.getConfig());
@@ -115,7 +121,7 @@ public class InMemCuboidJob extends AbstractHadoopJob {
             flatTableInputFormat.configureJob(job);
 
             // set output
-            IMROutput2.IMROutputFormat outputFormat = MRUtil.getBatchCubingOutputSide2(segment).getOuputFormat();
+            IMROutput2.IMROutputFormat outputFormat = MRUtil.getBatchCubingOutputSide2(segment).getOutputFormat();
             outputFormat.configureJobOutput(job, output, segment, segment.getCuboidScheduler(), 0);
 
             return waitForCompletion(job);

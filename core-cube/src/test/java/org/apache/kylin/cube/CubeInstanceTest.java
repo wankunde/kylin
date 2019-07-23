@@ -24,9 +24,9 @@ import java.io.InputStream;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
-import java.util.UUID;
 
 import org.apache.kylin.common.persistence.JsonSerializer;
+import org.apache.kylin.common.util.RandomUtil;
 import org.apache.kylin.cube.cuboid.TreeCuboidScheduler;
 import org.apache.kylin.metadata.model.SegmentStatusEnum;
 import org.junit.Assert;
@@ -66,12 +66,24 @@ public class CubeInstanceTest {
         CubeInstance newCubeInstance = CubeInstance.getCopyOf(cubeInstance);
 
         CubeSegment mockSeg = new CubeSegment();
-        mockSeg.setUuid(UUID.randomUUID().toString());
-        mockSeg.setStorageLocationIdentifier(UUID.randomUUID().toString());
+        mockSeg.setUuid(RandomUtil.randomUUID().toString());
+        mockSeg.setStorageLocationIdentifier(RandomUtil.randomUUID().toString());
         mockSeg.setStatus(SegmentStatusEnum.READY);
         newCubeInstance.getSegments().add(mockSeg);
 
         Assert.assertEquals(origSegCount, cubeInstance.getSegments().size());
         Assert.assertEquals(origSegCount + 1, newCubeInstance.getSegments().size());
+    }
+
+    @Test
+    public void equalTest() {
+        CubeInstance cubeInstanceWithOtherName = CubeInstance.getCopyOf(cubeInstance);
+        cubeInstanceWithOtherName.setName("other");
+
+        Assert.assertNotEquals(cubeInstance, cubeInstanceWithOtherName);
+
+        Assert.assertEquals(cubeInstance, CubeInstance.getCopyOf(cubeInstance));
+
+        Assert.assertNotEquals(cubeInstance, null);
     }
 }

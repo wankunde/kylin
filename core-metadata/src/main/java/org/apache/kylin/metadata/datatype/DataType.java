@@ -19,11 +19,11 @@
 package org.apache.kylin.metadata.datatype;
 
 import java.io.Serializable;
-import java.math.BigDecimal;
 import java.nio.ByteBuffer;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashSet;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
@@ -35,15 +35,13 @@ import org.apache.commons.lang.StringUtils;
 import org.apache.kylin.common.KylinConfig;
 import org.apache.kylin.common.util.BytesSerializer;
 import org.apache.kylin.common.util.BytesUtil;
-import org.apache.kylin.common.util.DateFormat;
 import org.apache.kylin.measure.MeasureTypeFactory;
 import org.apache.kylin.metadata.model.TblColRef.InnerDataTypeEnum;
 
 /**
  */
-@SuppressWarnings("serial")
 public class DataType implements Serializable {
-
+    private static final long serialVersionUID = -8891652700267537109L;
     private static final LinkedHashSet<String> VALID_TYPES = new LinkedHashSet<String>();
     private static final LinkedHashSet<String> COMPLEX_TYPES = new LinkedHashSet<String>();
 
@@ -126,7 +124,7 @@ public class DataType implements Serializable {
         LEGACY_TYPE_MAP.put("hllc16", "hllc(16)");
     }
 
-    private static final ConcurrentMap<DataType, DataType> CACHE = new ConcurrentHashMap<DataType, DataType>();
+    private static final ConcurrentMap<String, DataType> CACHE = new ConcurrentHashMap<String, DataType>();
 
     public static final DataType ANY = DataType.getType("any");
 
@@ -144,13 +142,28 @@ public class DataType implements Serializable {
         if (type == null)
             return null;
 
-        DataType dataType = new DataType(type);
-        DataType cached = CACHE.get(dataType);
+        DataType cached = CACHE.get(type);
         if (cached == null) {
-            CACHE.put(dataType, dataType);
+            DataType dataType = new DataType(type);
+            CACHE.put(type, dataType);
             cached = dataType;
         }
         return cached;
+    }
+
+    public static boolean isKylinSupported(String typeName) {
+        if (typeName == null) {
+            return false;
+        }
+
+        String formattedTypeName = typeName.trim().toLowerCase(Locale.ROOT);
+        formattedTypeName = replaceLegacy(formattedTypeName);
+
+        return TYPE_PATTERN.matcher(formattedTypeName).matches();
+    }
+
+    public static boolean isNumberFamily(String name) {
+        return NUMBER_FAMILY.contains(name);
     }
 
     // ============================================================================
@@ -158,6 +171,7 @@ public class DataType implements Serializable {
     private String name;
     private int precision;
     private int scale;
+    private transient DataTypeOrder order;
 
     public DataType(String name, int precision, int scale) {
         this.name = name;
@@ -166,7 +180,7 @@ public class DataType implements Serializable {
     }
 
     private DataType(String datatype) {
-        datatype = datatype.trim().toLowerCase();
+        datatype = datatype.trim().toLowerCase(Locale.ROOT);
         datatype = replaceLegacy(datatype);
 
         Pattern pattern = TYPE_PATTERN;
@@ -220,27 +234,27 @@ public class DataType implements Serializable {
                 scale = KylinConfig.getInstanceFromEnv().getDefaultDecimalScale();
             }
         }
-
     }
 
+    public DataTypeOrder getOrder() {
+        if (order == null)
+            order = DataTypeOrder.getInstance(this);
+        
+        return order;
+    }
+    
     public int compare(String value1, String value2) {
-        if (isDateTimeFamily()) {
-            Long millis1 = DateFormat.stringToMillis(value1);
-            Long millis2 = DateFormat.stringToMillis(value2);
-            return millis1.compareTo(millis2);
-        } else if (isIntegerFamily()) {
-            Long l1 = new Long(value1);
-            Long l2 = new Long(value2);
-            return l1.compareTo(l2);
-        } else if (isNumberFamily()) {
-            BigDecimal bigDecimal1 = new BigDecimal(value1);
-            BigDecimal bigDecimal2 = new BigDecimal(value2);
-            return bigDecimal1.compareTo(bigDecimal2);
-        }
-        return value1.compareTo(value2);
+        return getOrder().compare(value1,  value2);
     }
 
-    private String replaceLegacy(String str) {
+    public boolean needCompare() {
+        if (isComplexType(this) || isBoolean()) {
+            return false;
+        }
+        return true;
+    }
+
+    private static String replaceLegacy(String str) {
         String replace = LEGACY_TYPE_MAP.get(str);
         return replace == null ? str : replace;
     }
@@ -315,6 +329,10 @@ public class DataType implements Serializable {
 
     public boolean isDecimal() {
         return name.equals("decimal");
+    }
+
+    public boolean isBoolean() {
+        return name.equals("boolean");
     }
 
     public String getName() {

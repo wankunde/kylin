@@ -22,6 +22,7 @@ import java.io.IOException;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
@@ -31,6 +32,7 @@ import org.apache.kylin.rest.exception.InternalErrorException;
 import org.apache.kylin.rest.exception.NotFoundException;
 import org.apache.kylin.rest.request.CardinalityRequest;
 import org.apache.kylin.rest.request.HiveTableRequest;
+import org.apache.kylin.rest.response.TableSnapshotResponse;
 import org.apache.kylin.rest.service.TableACLService;
 import org.apache.kylin.rest.service.TableService;
 import org.slf4j.Logger;
@@ -73,12 +75,13 @@ public class TableController extends BasicController {
      */
     @RequestMapping(value = "", method = { RequestMethod.GET }, produces = { "application/json" })
     @ResponseBody
-    public List<TableDesc> getTableDesc(@RequestParam(value = "ext", required = false) boolean withExt, @RequestParam(value = "project", required = true) String project) throws IOException {
+    public List<TableDesc> getTableDesc(@RequestParam(value = "ext", required = false) boolean withExt,
+            @RequestParam(value = "project", required = true) String project) throws IOException {
         try {
             return tableService.getTableDescByProject(project, withExt);
         } catch (IOException e) {
             logger.error("Failed to get Hive Tables", e);
-            throw new InternalErrorException(e.getLocalizedMessage());
+            throw new InternalErrorException(e.getLocalizedMessage(), e);
         }
     }
 
@@ -89,7 +92,8 @@ public class TableController extends BasicController {
      * @return Table metadata array
      * @throws IOException
      */
-    @RequestMapping(value = "/{project}/{tableName:.+}", method = { RequestMethod.GET }, produces = { "application/json" })
+    @RequestMapping(value = "/{project}/{tableName:.+}", method = { RequestMethod.GET }, produces = {
+            "application/json" })
     @ResponseBody
     public TableDesc getTableDesc(@PathVariable String tableName, @PathVariable String project) {
         TableDesc table = tableService.getTableDescByName(tableName, false, project);
@@ -100,7 +104,8 @@ public class TableController extends BasicController {
 
     @RequestMapping(value = "/{tables}/{project}", method = { RequestMethod.POST }, produces = { "application/json" })
     @ResponseBody
-    public Map<String, String[]> loadHiveTables(@PathVariable String tables, @PathVariable String project, @RequestBody HiveTableRequest request) throws IOException {
+    public Map<String, String[]> loadHiveTables(@PathVariable String tables, @PathVariable String project,
+            @RequestBody HiveTableRequest request) throws IOException {
         String submitter = SecurityContextHolder.getContext().getAuthentication().getName();
         Map<String, String[]> result = new HashMap<String, String[]>();
         String[] tableNames = StringUtil.splitAndTrim(tables, ",");
@@ -122,7 +127,7 @@ public class TableController extends BasicController {
             }
         } catch (Throwable e) {
             logger.error("Failed to load Hive Table", e);
-            throw new InternalErrorException(e.getLocalizedMessage());
+            throw new InternalErrorException(e.getLocalizedMessage(), e);
         }
         return result;
     }
@@ -134,7 +139,7 @@ public class TableController extends BasicController {
         Set<String> unLoadFail = Sets.newHashSet();
         Map<String, String[]> result = new HashMap<String, String[]>();
         try {
-            for (String tableName : tables.split(",")) {
+            for (String tableName : StringUtil.splitByComma(tables)) {
                 tableACLService.deleteFromTableACLByTbl(project, tableName);
                 if (tableService.unloadHiveTable(tableName, project)) {
                     unLoadSuccess.add(tableName);
@@ -144,7 +149,7 @@ public class TableController extends BasicController {
             }
         } catch (Throwable e) {
             logger.error("Failed to unload Hive Table", e);
-            throw new InternalErrorException(e.getLocalizedMessage());
+            throw new InternalErrorException(e.getLocalizedMessage(), e);
         }
         result.put("result.unload.success", (String[]) unLoadSuccess.toArray(new String[unLoadSuccess.size()]));
         result.put("result.unload.fail", (String[]) unLoadFail.toArray(new String[unLoadFail.size()]));
@@ -158,18 +163,20 @@ public class TableController extends BasicController {
      * @return Table metadata array
      * @throws IOException
      */
-    @RequestMapping(value = "/{project}/{tableNames}/cardinality", method = { RequestMethod.PUT }, produces = { "application/json" })
+    @RequestMapping(value = "/{project}/{tableNames}/cardinality", method = { RequestMethod.PUT }, produces = {
+            "application/json" })
     @ResponseBody
-    public CardinalityRequest generateCardinality(@PathVariable String tableNames, @RequestBody CardinalityRequest request, @PathVariable String project) throws Exception {
+    public CardinalityRequest generateCardinality(@PathVariable String tableNames,
+            @RequestBody CardinalityRequest request, @PathVariable String project) throws Exception {
         String submitter = SecurityContextHolder.getContext().getAuthentication().getName();
-        String[] tables = tableNames.split(",");
+        String[] tables = StringUtil.splitByComma(tableNames);
         try {
             for (String table : tables) {
-                tableService.calculateCardinality(table.trim().toUpperCase(), submitter, project);
+                tableService.calculateCardinality(table.trim().toUpperCase(Locale.ROOT), submitter, project);
             }
         } catch (IOException e) {
             logger.error("Failed to calculate cardinality", e);
-            throw new InternalErrorException(e.getLocalizedMessage());
+            throw new InternalErrorException(e.getLocalizedMessage(), e);
         }
         return request;
     }
@@ -182,12 +189,13 @@ public class TableController extends BasicController {
      */
     @RequestMapping(value = "/hive", method = { RequestMethod.GET }, produces = { "application/json" })
     @ResponseBody
-    private List<String> showHiveDatabases(@RequestParam(value = "project", required = false) String project) throws IOException {
+    private List<String> showHiveDatabases(@RequestParam(value = "project", required = false) String project)
+            throws IOException {
         try {
             return tableService.getSourceDbNames(project);
         } catch (Throwable e) {
             logger.error(e.getLocalizedMessage(), e);
-            throw new InternalErrorException(e.getLocalizedMessage());
+            throw new InternalErrorException(e.getLocalizedMessage(), e);
         }
     }
 
@@ -199,13 +207,44 @@ public class TableController extends BasicController {
      */
     @RequestMapping(value = "/hive/{database}", method = { RequestMethod.GET }, produces = { "application/json" })
     @ResponseBody
-    private List<String> showHiveTables(@PathVariable String database, @RequestParam(value = "project", required = false) String project) throws IOException {
+    private List<String> showHiveTables(@PathVariable String database,
+            @RequestParam(value = "project", required = false) String project) throws IOException {
         try {
             return tableService.getSourceTableNames(project, database);
         } catch (Throwable e) {
             logger.error(e.getLocalizedMessage(), e);
-            throw new InternalErrorException(e.getLocalizedMessage());
+            throw new InternalErrorException(e.getLocalizedMessage(), e);
         }
     }
 
+    @RequestMapping(value = "/{project}/{tableName}/{snapshotID}/snapshotLocalCache", method = { RequestMethod.PUT })
+    @ResponseBody
+    public void updateSnapshotLocalCache(@PathVariable final String project, @PathVariable final String tableName,
+            @PathVariable final String snapshotID) {
+        tableService.updateSnapshotLocalCache(project, tableName, snapshotID);
+    }
+
+    @RequestMapping(value = "/{tableName}/{snapshotID}/snapshotLocalCache/state", method = { RequestMethod.GET })
+    @ResponseBody
+    public String getSnapshotLocalCacheState(@PathVariable final String tableName,
+            @PathVariable final String snapshotID) {
+        return tableService.getSnapshotLocalCacheState(tableName, snapshotID);
+    }
+
+    @RequestMapping(value = "/{tableName}/{snapshotID}/snapshotLocalCache", method = { RequestMethod.DELETE })
+    @ResponseBody
+    public void removeSnapshotLocalCache(@PathVariable final String tableName, @PathVariable final String snapshotID) {
+        tableService.removeSnapshotLocalCache(tableName, snapshotID);
+    }
+
+    @RequestMapping(value = "/{project}/{tableName}/snapshots", method = { RequestMethod.GET })
+    @ResponseBody
+    public List<TableSnapshotResponse> getTableSnapshots(@PathVariable final String project,
+            @PathVariable final String tableName) throws IOException {
+        return tableService.getLookupTableSnapshots(project, tableName);
+    }
+
+    public void setTableService(TableService tableService) {
+        this.tableService = tableService;
+    }
 }

@@ -22,12 +22,14 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Locale;
 
 import org.apache.commons.lang.StringUtils;
 import org.apache.kylin.common.util.JsonUtil;
 import org.apache.kylin.metadata.project.ProjectInstance;
 import org.apache.kylin.rest.exception.BadRequestException;
 import org.apache.kylin.rest.exception.InternalErrorException;
+import org.apache.kylin.rest.exception.NotFoundException;
 import org.apache.kylin.rest.request.ProjectRequest;
 import org.apache.kylin.rest.service.AccessService;
 import org.apache.kylin.rest.service.CubeService;
@@ -127,15 +129,16 @@ public class ProjectController extends BasicController {
 
         if (!ValidateUtil.isAlphanumericUnderscore(projectDesc.getName())) {
             throw new BadRequestException(
-                    String.format("Invalid Project name %s, only letters, numbers and underscore supported."),
-                    projectDesc.getName());
+                    String.format(Locale.ROOT,
+                            "Invalid Project name %s, only letters, numbers and underscore supported.",
+                    projectDesc.getName()));
         }
 
         ProjectInstance createdProj = null;
         try {
             createdProj = projectService.createProject(projectDesc);
         } catch (Exception e) {
-            throw new InternalErrorException(e.getLocalizedMessage());
+            throw new InternalErrorException(e.getLocalizedMessage(), e);
         }
 
         return createdProj;
@@ -155,7 +158,7 @@ public class ProjectController extends BasicController {
         try {
             ProjectInstance currentProject = projectService.getProjectManager().getProject(formerProjectName);
             if (currentProject == null) {
-                throw new InternalErrorException("The project named " + formerProjectName + " does not exists");
+                throw new NotFoundException("The project named " + formerProjectName + " does not exists");
             }
 
             if (projectDesc.getName().equals(currentProject.getName())) {
@@ -166,7 +169,7 @@ public class ProjectController extends BasicController {
             }
         } catch (Exception e) {
             logger.error("Failed to deal with the request.", e);
-            throw new InternalErrorException(e.getLocalizedMessage());
+            throw new InternalErrorException(e.getLocalizedMessage(), e);
         }
 
         return updatedProj;
@@ -190,7 +193,11 @@ public class ProjectController extends BasicController {
         try {
 
             ProjectInstance project = projectService.getProjectManager().getProject(projectName);
-            projectService.deleteProject(projectName, project);
+            if (project != null) {
+                projectService.deleteProject(projectName, project);
+            } else {
+                logger.info("Project {} not exists", projectName);
+            }
         } catch (Exception e) {
             logger.error(e.getLocalizedMessage(), e);
             throw new InternalErrorException("Failed to delete project. " + " Caused by: " + e.getMessage(), e);

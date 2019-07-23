@@ -83,7 +83,7 @@ public class JobInstanceExtractor extends AbstractInfoExtractor {
     protected void executeExtract(OptionsHelper optionsHelper, File exportDir) throws Exception {
         String cube = optionsHelper.hasOption(OPTION_CUBE) ? optionsHelper.getOptionValue(OPTION_CUBE) : null;
         String project = optionsHelper.hasOption(OPTION_PROJECT) ? optionsHelper.getOptionValue(OPTION_PROJECT) : null;
-        int period = optionsHelper.hasOption(OPTION_PERIOD) ? Integer.valueOf(optionsHelper.getOptionValue(OPTION_PERIOD)) : DEFAULT_PERIOD;
+        int period = optionsHelper.hasOption(OPTION_PERIOD) ? Integer.parseInt(optionsHelper.getOptionValue(OPTION_PERIOD)) : DEFAULT_PERIOD;
 
         long endTime = System.currentTimeMillis();
         long startTime = endTime - period * 24 * 3600 * 1000; // time in Millis
@@ -130,10 +130,14 @@ public class JobInstanceExtractor extends AbstractInfoExtractor {
         Output output = outputs.get(cubeJob.getId());
         final JobInstance result = new JobInstance();
         result.setName(cubeJob.getName());
+        result.setProjectName(cubeJob.getProjectName());
         if (cube != null) {
-            result.setRelatedCube(cube.getDisplayName());
+            result.setRelatedCube(cube.getName());
+            result.setDisplayCubeName(cube.getDisplayName());
         } else {
-            result.setRelatedCube(CubingExecutableUtil.getCubeName(cubeJob.getParams()));
+            String cubeName = CubingExecutableUtil.getCubeName(cubeJob.getParams());
+            result.setRelatedCube(cubeName);
+            result.setDisplayCubeName(cubeName);
         }
         result.setRelatedSegment(CubingExecutableUtil.getSegmentId(cubeJob.getParams()));
         result.setLastModified(output.getLastModified());
@@ -142,6 +146,7 @@ public class JobInstanceExtractor extends AbstractInfoExtractor {
         result.setType(CubeBuildTypeEnum.BUILD);
         result.setStatus(parseToJobStatus(output.getState()));
         result.setMrWaiting(AbstractExecutable.getExtraInfoAsLong(output, CubingJob.MAP_REDUCE_WAIT_TIME, 0L) / 1000);
+        result.setBuildInstance(AbstractExecutable.getBuildInstance(output));
         result.setExecStartTime(AbstractExecutable.getStartTime(output));
         result.setExecEndTime(AbstractExecutable.getEndTime(output));
         result.setExecInterruptTime(AbstractExecutable.getInterruptTime(output));

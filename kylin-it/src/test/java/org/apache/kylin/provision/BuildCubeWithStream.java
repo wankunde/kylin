@@ -25,9 +25,9 @@ import java.io.IOException;
 import java.text.ParseException;
 import java.text.SimpleDateFormat;
 import java.util.List;
+import java.util.Locale;
 import java.util.Random;
 import java.util.TimeZone;
-import java.util.UUID;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -36,14 +36,12 @@ import java.util.concurrent.TimeUnit;
 
 import org.I0Itec.zkclient.ZkConnection;
 import org.apache.commons.lang3.StringUtils;
-import org.apache.curator.RetryPolicy;
-import org.apache.curator.framework.CuratorFramework;
-import org.apache.curator.framework.CuratorFrameworkFactory;
-import org.apache.curator.retry.ExponentialBackoffRetry;
 import org.apache.kafka.common.requests.MetadataResponse;
 import org.apache.kylin.common.KylinConfig;
 import org.apache.kylin.common.util.ClassUtil;
 import org.apache.kylin.common.util.HBaseMetadataTestCase;
+import org.apache.kylin.common.util.RandomUtil;
+import org.apache.kylin.common.util.ZKUtil;
 import org.apache.kylin.cube.CubeInstance;
 import org.apache.kylin.cube.CubeManager;
 import org.apache.kylin.cube.CubeSegment;
@@ -55,6 +53,7 @@ import org.apache.kylin.job.execution.DefaultChainedExecutable;
 import org.apache.kylin.job.execution.ExecutableManager;
 import org.apache.kylin.job.execution.ExecutableState;
 import org.apache.kylin.job.impl.threadpool.DefaultScheduler;
+import org.apache.kylin.job.lock.zookeeper.ZookeeperJobLock;
 import org.apache.kylin.job.streaming.Kafka10DataLoader;
 import org.apache.kylin.metadata.model.SegmentRange;
 import org.apache.kylin.metadata.model.SegmentStatusEnum;
@@ -67,8 +66,6 @@ import org.apache.kylin.source.SourcePartition;
 import org.apache.kylin.source.kafka.KafkaConfigManager;
 import org.apache.kylin.source.kafka.config.BrokerConfig;
 import org.apache.kylin.source.kafka.config.KafkaConfig;
-import org.apache.kylin.storage.hbase.util.ZookeeperJobLock;
-import org.apache.kylin.storage.hbase.util.ZookeeperUtil;
 import org.junit.Assert;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -86,17 +83,17 @@ public class BuildCubeWithStream {
     private DefaultScheduler scheduler;
     protected ExecutableManager jobService;
     static final String cubeName = "test_streaming_table_cube";
+    static final String joinTableCubeName = "test_streaming_join_table_cube";
 
     private KafkaConfig kafkaConfig;
     private MockKafka kafkaServer;
     private ZkConnection zkConnection;
-    private final String kafkaZkPath = "/kylin/streaming/" + UUID.randomUUID().toString();
-
+    private final String kafkaZkPath = ZKUtil.getZkRootBasedPath("streaming") + "/" + RandomUtil.randomUUID().toString();
     protected static boolean fastBuildMode = false;
     private volatile boolean generateData = true;
     private volatile boolean generateDataDone = false;
 
-    private static final int BUILD_ROUND = 5;
+    private static final int BUILD_ROUND = 4;
 
     public void before() throws Exception {
         deployEnv();
@@ -125,10 +122,8 @@ public class BuildCubeWithStream {
         final StreamingConfig streamingConfig = streamingManager.getStreamingConfig(factTable);
         kafkaConfig = KafkaConfigManager.getInstance(kylinConfig).getKafkaConfig(streamingConfig.getName());
 
-        String topicName = UUID.randomUUID().toString();
-        String localIp = NetworkUtils.getLocalIp();
+        String topicName = RandomUtil.randomUUID().toString();
         BrokerConfig brokerConfig = kafkaConfig.getKafkaClusterConfigs().get(0).getBrokerConfigs().get(0);
-        brokerConfig.setHost(localIp);
         kafkaConfig.setTopic(topicName);
         KafkaConfigManager.getInstance(kylinConfig).updateKafkaConfig(kafkaConfig);
 
@@ -137,11 +132,11 @@ public class BuildCubeWithStream {
 
     private void startEmbeddedKafka(String topicName, BrokerConfig brokerConfig) {
         //Start mock Kakfa
-        String zkConnectionStr = ZookeeperUtil.getZKConnectString() + kafkaZkPath;
+        String zkConnectionStr = ZKUtil.getZKConnectString(KylinConfig.getInstanceFromEnv()) + kafkaZkPath;
         System.out.println("zkConnectionStr" + zkConnectionStr);
         zkConnection = new ZkConnection(zkConnectionStr);
         // Assert.assertEquals(ZooKeeper.States.CONNECTED, zkConnection.getZookeeperState());
-        kafkaServer = new MockKafka(zkConnection, brokerConfig.getPort(), brokerConfig.getId());
+        kafkaServer = new MockKafka(zkConnection, brokerConfig.getHost() + ":" + brokerConfig.getPort(), brokerConfig.getId());
         kafkaServer.start();
 
         kafkaServer.createTopic(topicName, 3, 1);
@@ -164,10 +159,11 @@ public class BuildCubeWithStream {
 
     public void build() throws Exception {
         clearSegment(cubeName);
+        clearSegment(joinTableCubeName);
         new Thread(new Runnable() {
             @Override
             public void run() {
-                SimpleDateFormat f = new SimpleDateFormat("yyyy-MM-dd");
+                SimpleDateFormat f = new SimpleDateFormat("yyyy-MM-dd", Locale.ROOT);
                 f.setTimeZone(TimeZone.getTimeZone("GMT"));
                 long dateStart = 0;
                 try {
@@ -207,24 +203,25 @@ public class BuildCubeWithStream {
                 Thread.sleep(30 * 1000); // wait for new messages
             }
 
-            FutureTask futureTask = new FutureTask(new Callable<ExecutableState>() {
-                @Override
-                public ExecutableState call() {
-                    ExecutableState result = null;
-                    try {
-                        result = buildSegment(cubeName, 0, Long.MAX_VALUE);
-                    } catch (Exception e) {
-                        // previous build hasn't been started, or other case.
-                        e.printStackTrace();
-                    }
-
-                    return result;
-                }
-            });
+            FutureTask futureTask = new FutureTask(new StreamOffsetCallable(cubeName, 0, Long.MAX_VALUE));
 
             executorService.submit(futureTask);
             futures.add(futureTask);
         }
+
+        Thread.sleep(30 * 1000);
+
+        // build joined lookup table streaming cube
+        // range is normal streaming cube's first segment.start and last segment.end
+        CubeInstance cube = cubeManager.getCube(cubeName);
+        CubeSegment firstSeg = cube.getFirstSegment();
+        CubeSegment lastSeg = cube.getLastSegment();
+        SourcePartition sourcePartition = new SourcePartition(null, new SegmentRange(firstSeg.getSegRange().start, lastSeg.getSegRange().end), firstSeg.getSourcePartitionOffsetStart(), lastSeg.getSourcePartitionOffsetEnd());
+
+        FutureTask futureTask = new FutureTask(new StreamSourcePartitionCallable(joinTableCubeName, sourcePartition));
+
+        executorService.submit(futureTask);
+        futures.add(futureTask);
 
         generateData = false;
         executorService.shutdown();
@@ -240,7 +237,9 @@ public class BuildCubeWithStream {
 
         logger.info(succeedBuild + " build jobs have been successfully completed.");
         List<CubeSegment> segments = cubeManager.getCube(cubeName).getSegments(SegmentStatusEnum.READY);
-        Assert.assertTrue(segments.size() == succeedBuild);
+        List<CubeSegment> joinTableSegments = cubeManager.getCube(joinTableCubeName).getSegments(SegmentStatusEnum.READY);
+
+        Assert.assertTrue(segments.size() + joinTableSegments.size() == succeedBuild);
 
         if (fastBuildMode == false) {
             long endOffset = (Long) segments.get(segments.size() - 1).getSegRange().end.v;
@@ -285,18 +284,29 @@ public class BuildCubeWithStream {
         ISource source = SourceManager.getSource(cubeInstance);
         SourcePartition partition = source.enrichSourcePartitionBeforeBuild(cubeInstance,
                 new SourcePartition(null, new SegmentRange(startOffset, endOffset), null, null));
+
+        return buildSegment(cubeName, partition);
+    }
+
+    protected ExecutableState buildSegment(String cubeName, SourcePartition partition) throws Exception {
+        logger.info("SourcePartition: {}", partition.toString());
         CubeSegment segment = cubeManager.appendSegment(cubeManager.getCube(cubeName), partition);
+
         DefaultChainedExecutable job = EngineFactory.createBatchCubingJob(segment, "TEST");
         jobService.addJob(job);
         waitForJob(job.getId());
         return job.getStatus();
     }
 
-    protected void deployEnv() throws IOException {
+    protected void deployEnv() throws Exception {
         DeployUtil.overrideJobJarLocations();
-        //                DeployUtil.initCliWorkDir();
-        //                DeployUtil.deployMetadata();
+//        DeployUtil.initCliWorkDir();
+//        DeployUtil.deployMetadata();
+
+        // prepare test data for joined lookup table
+        DeployUtil.deployTablesInModelWithExclusiveTables("test_streaming_join_table_model", new String[]{"DEFAULT.STREAMING_TABLE"});
     }
+
 
     public static void beforeClass() throws Exception {
         logger.info("Adding to classpath: " + new File(HBaseMetadataTestCase.SANDBOX_TEST_DATA).getAbsolutePath());
@@ -310,23 +320,11 @@ public class BuildCubeWithStream {
     }
 
     public void after() {
-        kafkaServer.stop();
-        cleanKafkaZkPath(kafkaZkPath);
-        DefaultScheduler.destroyInstance();
-    }
-
-    private void cleanKafkaZkPath(String path) {
-        RetryPolicy retryPolicy = new ExponentialBackoffRetry(1000, 3);
-        CuratorFramework zkClient = CuratorFrameworkFactory.newClient(ZookeeperUtil.getZKConnectString(), retryPolicy);
-        zkClient.start();
-
-        try {
-            zkClient.delete().deletingChildrenIfNeeded().forPath(kafkaZkPath);
-        } catch (Exception e) {
-            logger.warn("Failed to delete zookeeper path: " + path, e);
-        } finally {
-            zkClient.close();
+        if (kafkaServer != null) {
+            kafkaServer.stop();
         }
+        ZKUtil.cleanZkPath(kafkaZkPath);
+        DefaultScheduler.destroyInstance();
     }
 
     protected void waitForJob(String jobId) {
@@ -382,5 +380,51 @@ public class BuildCubeWithStream {
         System.out.println("Time elapsed: " + (millis / 1000) + " sec - in " + BuildCubeWithStream.class.getName());
 
         System.exit(exitCode);
+    }
+
+    class StreamOffsetCallable implements Callable<ExecutableState> {
+        private final String cubeName;
+        private final long startOffset;
+        private final long endOffset;
+
+        public StreamOffsetCallable(String cubeName, long startOffset, long endOffset) {
+            this.cubeName = cubeName;
+            this.startOffset = startOffset;
+            this.endOffset = endOffset;
+        }
+
+        @Override
+        public ExecutableState call() throws Exception {
+            ExecutableState result = null;
+            try {
+                result = buildSegment(cubeName, startOffset, endOffset);
+            } catch (Exception e) {
+                // previous build hasn't been started, or other case.
+                e.printStackTrace();
+            }
+            return result;
+        }
+    }
+
+    class StreamSourcePartitionCallable implements Callable<ExecutableState> {
+        private final String cubeName;
+        private final SourcePartition sourcePartition;
+
+        public StreamSourcePartitionCallable(String cubeName, SourcePartition sourcePartition) {
+            this.cubeName = cubeName;
+            this.sourcePartition = sourcePartition;
+        }
+
+        @Override
+        public ExecutableState call() throws Exception {
+            ExecutableState result = null;
+            try {
+                result = buildSegment(cubeName, sourcePartition);
+            } catch (Exception e) {
+                // previous build hasn't been started, or other case.
+                e.printStackTrace();
+            }
+            return result;
+        }
     }
 }

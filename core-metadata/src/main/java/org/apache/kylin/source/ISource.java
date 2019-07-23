@@ -19,6 +19,7 @@
 package org.apache.kylin.source;
 
 import java.io.Closeable;
+import java.io.IOException;
 
 import org.apache.kylin.metadata.model.IBuildable;
 import org.apache.kylin.metadata.model.TableDesc;
@@ -42,7 +43,7 @@ public interface ISource extends Closeable {
     /**
      * Return a ReadableTable that can iterate through the rows of given table.
      */
-    IReadableTable createReadableTable(TableDesc tableDesc);
+    IReadableTable createReadableTable(TableDesc tableDesc, String uuid);
 
     /**
      * Give the source a chance to enrich a SourcePartition before build start.
@@ -55,4 +56,9 @@ public interface ISource extends Closeable {
      * For testing purpose.
      */
     ISampleDataDeployer getSampleDataDeployer();
+
+    /**
+     * Unload table.
+     */
+    void unloadTable(String tableName, String project) throws IOException;
 }

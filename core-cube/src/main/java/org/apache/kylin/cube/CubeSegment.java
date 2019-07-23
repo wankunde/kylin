@@ -19,10 +19,12 @@
 package org.apache.kylin.cube;
 
 import java.io.Serializable;
+import java.text.ParseException;
 import java.text.SimpleDateFormat;
 import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.TimeZone;
@@ -31,6 +33,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import org.apache.kylin.common.KylinConfig;
 import org.apache.kylin.common.persistence.ResourceStore;
 import org.apache.kylin.common.util.Dictionary;
+import org.apache.kylin.common.util.Pair;
 import org.apache.kylin.common.util.ShardingHash;
 import org.apache.kylin.cube.cuboid.CuboidScheduler;
 import org.apache.kylin.cube.kv.CubeDimEncMap;
@@ -115,9 +118,16 @@ public class CubeSegment implements IBuildable, ISegment, Serializable {
     @JsonInclude(JsonInclude.Include.NON_EMPTY)
     private Map<Integer, Long> sourcePartitionOffsetEnd = Maps.newHashMap();
 
+    @JsonProperty("stream_source_checkpoint")
+    private String streamSourceCheckpoint;
+
     @JsonProperty("additionalInfo")
     @JsonInclude(JsonInclude.Include.NON_EMPTY)
     private Map<String, String> additionalInfo = new LinkedHashMap<String, String>();
+
+    @JsonProperty("dimension_range_info_map")
+    @JsonInclude(JsonInclude.Include.NON_EMPTY)
+    private Map<String, DimensionRangeInfo> dimensionRangeInfoMap = Maps.newHashMap();
 
     private Map<Long, Short> cuboidBaseShards = Maps.newConcurrentMap(); // cuboid id ==> base(starting) shard for this cuboid
 
@@ -146,9 +156,29 @@ public class CubeSegment implements IBuildable, ISegment, Serializable {
         }
 
         // using time
-        SimpleDateFormat dateFormat = new SimpleDateFormat("yyyyMMddHHmmss");
+        SimpleDateFormat dateFormat = new SimpleDateFormat("yyyyMMddHHmmss", Locale.ROOT);
         dateFormat.setTimeZone(TimeZone.getTimeZone("GMT"));
         return dateFormat.format(tsRange.start.v) + "_" + dateFormat.format(tsRange.end.v);
+    }
+
+    public static Pair<Long, Long> parseSegmentName(String segmentName) {
+        if ("FULL".equals(segmentName)) {
+            return new Pair<>(0L, 0L);
+        }
+        String[] startEnd = segmentName.split("_");
+        if (startEnd.length != 2) {
+            throw new IllegalArgumentException("the segmentName is illegal: " + segmentName);
+        }
+        SimpleDateFormat dateFormat = new SimpleDateFormat("yyyyMMddHHmmss", Locale.ROOT);
+        dateFormat.setTimeZone(TimeZone.getTimeZone("GMT"));
+
+        try {
+            long dateRangeStart = dateFormat.parse(startEnd[0]).getTime();
+            long dateRangeEnd = dateFormat.parse(startEnd[1]).getTime();
+            return new Pair<>(dateRangeStart, dateRangeEnd);
+        } catch (ParseException e) {
+            throw new IllegalArgumentException("Invalid segmentName for CubeSegment, segmentName = " + segmentName);
+        }
     }
 
     // ============================================================================
@@ -398,6 +428,12 @@ public class CubeSegment implements IBuildable, ISegment, Serializable {
 
     @Override
     public void validate() throws IllegalStateException {
+        if (cubeInstance.getDescriptor().getModel().getPartitionDesc().isPartitioned()) {
+            if (!isOffsetCube() && dateRangeStart >= dateRangeEnd)
+                throw new IllegalStateException("Invalid segment, dateRangeStart(" + dateRangeStart + ") must be smaller than dateRangeEnd(" + dateRangeEnd + ") in segment " + this);
+            if (isOffsetCube() && sourceOffsetStart >= sourceOffsetEnd)
+                throw new IllegalStateException("Invalid segment, sourceOffsetStart(" + sourceOffsetStart + ") must be smaller than sourceOffsetEnd(" + sourceOffsetEnd + ") in segment " + this);
+        }
     }
 
     public String getProject() {
@@ -574,5 +610,21 @@ public class CubeSegment implements IBuildable, ISegment, Serializable {
 
     public void setSourcePartitionOffsetStart(Map<Integer, Long> sourcePartitionOffsetStart) {
         this.sourcePartitionOffsetStart = sourcePartitionOffsetStart;
+    }
+
+    public Map<String, DimensionRangeInfo> getDimensionRangeInfoMap() {
+        return dimensionRangeInfoMap;
+    }
+
+    public void setDimensionRangeInfoMap(Map<String, DimensionRangeInfo> dimensionRangeInfoMap) {
+        this.dimensionRangeInfoMap = dimensionRangeInfoMap;
+    }
+
+    public String getStreamSourceCheckpoint() {
+        return streamSourceCheckpoint;
+    }
+
+    public void setStreamSourceCheckpoint(String streamSourceCheckpoint) {
+        this.streamSourceCheckpoint = streamSourceCheckpoint;
     }
 }

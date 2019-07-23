@@ -23,6 +23,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
@@ -65,6 +66,7 @@ import org.apache.kylin.metadata.realization.IRealizationConstants;
 import org.apache.kylin.metadata.realization.RealizationStatusEnum;
 import org.apache.kylin.metadata.realization.RealizationType;
 import org.apache.kylin.storage.hbase.HBaseConnection;
+import org.apache.kylin.stream.core.source.StreamingSourceConfig;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -336,6 +338,11 @@ public class CubeMigrationCLI extends AbstractApplication {
             metaResource.add(ACL_PREFIX + cube.getUuid());
             metaResource.add(ACL_PREFIX + cube.getModel().getUuid());
         }
+
+        if (cubeDesc.isStreamingCube()) {
+            // add streaming source config info for streaming cube
+            metaResource.add(StreamingSourceConfig.concatResourcePath(cubeDesc.getModel().getRootFactTableName()));
+        }
     }
 
     @Override
@@ -432,15 +439,15 @@ public class CubeMigrationCLI extends AbstractApplication {
                 logger.info("Item: {} doesn't exist, ignore it.", item);
                 break;
             }
-            dstStore.putResource(renameTableWithinProject(item), res.inputStream, res.timestamp);
-            res.inputStream.close();
+            dstStore.putResource(renameTableWithinProject(item), res.content(), res.lastModified());
+            res.content().close();
             logger.info("Item " + item + " is copied");
             break;
         }
         case COPY_DICT_OR_SNAPSHOT: {
             String item = (String) opt.params[0];
 
-            if (item.toLowerCase().endsWith(".dict")) {
+            if (item.toLowerCase(Locale.ROOT).endsWith(".dict")) {
                 DictionaryManager dstDictMgr = DictionaryManager.getInstance(dstConfig);
                 DictionaryManager srcDicMgr = DictionaryManager.getInstance(srcConfig);
                 DictionaryInfo dictSrc = srcDicMgr.getDictionaryInfo(item);
@@ -460,7 +467,7 @@ public class CubeMigrationCLI extends AbstractApplication {
                     String cubeName = (String) opt.params[1];
                     String cubeResPath = CubeInstance.concatResourcePath(cubeName);
                     Serializer<CubeInstance> cubeSerializer = new JsonSerializer<CubeInstance>(CubeInstance.class);
-                    CubeInstance cube = dstStore.getResource(cubeResPath, CubeInstance.class, cubeSerializer);
+                    CubeInstance cube = dstStore.getResource(cubeResPath, cubeSerializer);
                     for (CubeSegment segment : cube.getSegments()) {
                         for (Map.Entry<String, String> entry : segment.getDictionaries().entrySet()) {
                             if (entry.getValue().equalsIgnoreCase(item)) {
@@ -468,11 +475,11 @@ public class CubeMigrationCLI extends AbstractApplication {
                             }
                         }
                     }
-                    dstStore.putResource(cubeResPath, cube, cubeSerializer);
+                    dstStore.checkAndPutResource(cubeResPath, cube, cubeSerializer);
                     logger.info("Item " + item + " is dup, instead " + dictSaved.getResourcePath() + " is reused");
                 }
 
-            } else if (item.toLowerCase().endsWith(".snapshot")) {
+            } else if (item.toLowerCase(Locale.ROOT).endsWith(".snapshot")) {
                 SnapshotManager dstSnapMgr = SnapshotManager.getInstance(dstConfig);
                 SnapshotManager srcSnapMgr = SnapshotManager.getInstance(srcConfig);
                 SnapshotTable snapSrc = srcSnapMgr.getSnapshotTable(item);
@@ -490,7 +497,7 @@ public class CubeMigrationCLI extends AbstractApplication {
                     String cubeName = (String) opt.params[1];
                     String cubeResPath = CubeInstance.concatResourcePath(cubeName);
                     Serializer<CubeInstance> cubeSerializer = new JsonSerializer<CubeInstance>(CubeInstance.class);
-                    CubeInstance cube = dstStore.getResource(cubeResPath, CubeInstance.class, cubeSerializer);
+                    CubeInstance cube = dstStore.getResource(cubeResPath, cubeSerializer);
                     for (CubeSegment segment : cube.getSegments()) {
                         for (Map.Entry<String, String> entry : segment.getSnapshots().entrySet()) {
                             if (entry.getValue().equalsIgnoreCase(item)) {
@@ -498,7 +505,7 @@ public class CubeMigrationCLI extends AbstractApplication {
                             }
                         }
                     }
-                    dstStore.putResource(cubeResPath, cube, cubeSerializer);
+                    dstStore.checkAndPutResource(cubeResPath, cube, cubeSerializer);
                     logger.info("Item " + item + " is dup, instead " + snapSaved.getResourcePath() + " is reused");
 
                 }
@@ -525,7 +532,7 @@ public class CubeMigrationCLI extends AbstractApplication {
 
             String projectResPath = ProjectInstance.concatResourcePath(projectName);
             Serializer<ProjectInstance> projectSerializer = new JsonSerializer<ProjectInstance>(ProjectInstance.class);
-            ProjectInstance project = dstStore.getResource(projectResPath, ProjectInstance.class, projectSerializer);
+            ProjectInstance project = dstStore.getResource(projectResPath, projectSerializer);
 
             for (TableRef tableRef : srcCube.getModel().getAllTables()) {
                 project.addTable(tableRef.getTableIdentity());
@@ -536,7 +543,7 @@ public class CubeMigrationCLI extends AbstractApplication {
             project.removeRealization(RealizationType.CUBE, cubeName);
             project.addRealizationEntry(RealizationType.CUBE, cubeName);
 
-            dstStore.putResource(projectResPath, project, projectSerializer);
+            dstStore.checkAndPutResource(projectResPath, project, projectSerializer);
             logger.info("Project instance for " + projectName + " is corrected");
             break;
         }
@@ -544,13 +551,12 @@ public class CubeMigrationCLI extends AbstractApplication {
             String cubeName = (String) opt.params[0];
             String cubeInstancePath = CubeInstance.concatResourcePath(cubeName);
             Serializer<CubeInstance> cubeInstanceSerializer = new JsonSerializer<CubeInstance>(CubeInstance.class);
-            CubeInstance cubeInstance = dstStore.getResource(cubeInstancePath, CubeInstance.class,
-                    cubeInstanceSerializer);
+            CubeInstance cubeInstance = dstStore.getResource(cubeInstancePath, cubeInstanceSerializer);
             cubeInstance.getSegments().clear();
             cubeInstance.clearCuboids();
             cubeInstance.setCreateTimeUTC(System.currentTimeMillis());
             cubeInstance.setStatus(RealizationStatusEnum.DISABLED);
-            dstStore.putResource(cubeInstancePath, cubeInstance, cubeInstanceSerializer);
+            dstStore.checkAndPutResource(cubeInstancePath, cubeInstance, cubeInstanceSerializer);
             logger.info("Cleared segments for " + cubeName + ", since segments has not been copied");
             break;
         }
@@ -558,10 +564,10 @@ public class CubeMigrationCLI extends AbstractApplication {
             String cubeName = (String) opt.params[0];
             String cubeResPath = CubeInstance.concatResourcePath(cubeName);
             Serializer<CubeInstance> cubeSerializer = new JsonSerializer<CubeInstance>(CubeInstance.class);
-            CubeInstance cube = srcStore.getResource(cubeResPath, CubeInstance.class, cubeSerializer);
+            CubeInstance cube = srcStore.getResource(cubeResPath, cubeSerializer);
             cube.getSegments().clear();
             cube.setStatus(RealizationStatusEnum.DISABLED);
-            srcStore.putResource(cubeResPath, cube, cubeSerializer);
+            srcStore.checkAndPutResource(cubeResPath, cube, cubeSerializer);
             logger.info("Cube " + cubeName + " is purged and disabled in " + srcConfig.getMetadataUrl());
 
             break;

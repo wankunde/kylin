@@ -19,12 +19,12 @@
 package org.apache.kylin.storage.hbase.steps;
 
 import java.io.IOException;
+import java.util.Collection;
 
 import org.apache.commons.cli.Options;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
-import org.apache.hadoop.hbase.HBaseConfiguration;
 import org.apache.hadoop.hbase.KeyValue;
 import org.apache.hadoop.hbase.client.HTable;
 import org.apache.hadoop.hbase.io.ImmutableBytesWritable;
@@ -46,6 +46,8 @@ import org.apache.kylin.engine.mr.common.BatchConstants;
 import org.apache.kylin.storage.hbase.HBaseConnection;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import static org.apache.hadoop.hbase.HBaseConfiguration.merge;
 
 /**
  * @author George Song (ysong1)
@@ -74,11 +76,16 @@ public class CubeHFileJob extends AbstractHadoopJob {
             CubeManager cubeMgr = CubeManager.getInstance(KylinConfig.getInstanceFromEnv());
 
             CubeInstance cube = cubeMgr.getCube(cubeName);
-            job = Job.getInstance(getConf(), getOptionValue(OPTION_JOB_NAME));
+
+            // use current hbase configuration
+            Configuration configuration = new Configuration(HBaseConnection.getCurrentHBaseConfiguration());
+            String[] allServices = getAllServices(configuration);
+            merge(configuration, getConf());
+            configuration.setStrings(DFSConfigKeys.DFS_NAMESERVICES, allServices);
+
+            job = Job.getInstance(configuration, getOptionValue(OPTION_JOB_NAME));
 
             setJobClasspath(job, cube.getConfig());
-            // For separate HBase cluster, note the output is a qualified HDFS path if "kylin.storage.hbase.cluster-fs" is configured, ref HBaseMRSteps.getHFilePath()
-            HBaseConnection.addHBaseClusterNNHAConfiguration(job.getConfiguration());
 
             addInputDirs(getOptionValue(OPTION_INPUT_PATH), job);
             FileOutputFormat.setOutputPath(job, output);
@@ -88,12 +95,11 @@ public class CubeHFileJob extends AbstractHadoopJob {
             // add metadata to distributed cache
             attachCubeMetadata(cube, job.getConfiguration());
 
-            Configuration hbaseConf = HBaseConfiguration.create(getConf());
-            HTable htable = new HTable(hbaseConf, getOptionValue(OPTION_HTABLE_NAME));
+            HTable htable = new HTable(configuration, getOptionValue(OPTION_HTABLE_NAME));
 
             // Automatic config !
             HFileOutputFormat3.configureIncrementalLoad(job, htable);
-            reconfigurePartitions(hbaseConf, partitionFilePath);
+            reconfigurePartitions(configuration, partitionFilePath);
 
             job.setInputFormatClass(SequenceFileInputFormat.class);
             job.setMapperClass(CubeHFileMapper.class);
@@ -103,7 +109,7 @@ public class CubeHFileJob extends AbstractHadoopJob {
             job.setSortComparatorClass(RowKeyWritable.RowKeyComparator.class);
 
             // set block replication to 3 for hfiles
-            hbaseConf.set(DFSConfigKeys.DFS_REPLICATION_KEY, "3");
+            configuration.set(DFSConfigKeys.DFS_REPLICATION_KEY, "3");
 
             this.deletePath(job.getConfiguration(), output);
 
@@ -149,6 +155,15 @@ public class CubeHFileJob extends AbstractHadoopJob {
         } else {
             logger.info("File '" + path.toString() + " doesn't exist, will not reconfigure hfile Partitions");
         }
+    }
+
+    private String[] getAllServices(Configuration hbaseConf) {
+        Collection<String> hbaseHdfsServices
+            = hbaseConf.getTrimmedStringCollection(DFSConfigKeys.DFS_NAMESERVICES);
+        Collection<String> mainNameServices
+            = getConf().getTrimmedStringCollection(DFSConfigKeys.DFS_NAMESERVICES);
+        mainNameServices.addAll(hbaseHdfsServices);
+        return mainNameServices.toArray(new String[0]);
     }
 
     public static void main(String[] args) throws Exception {

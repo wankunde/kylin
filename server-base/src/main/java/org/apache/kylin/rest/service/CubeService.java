@@ -6,9 +6,9 @@
  * to you under the Apache License, Version 2.0 (the
  * "License"); you may not use this file except in compliance
  * with the License.  You may obtain a copy of the License at
- * 
+ *
  *     http://www.apache.org/licenses/LICENSE-2.0
- * 
+ *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -24,13 +24,17 @@ import java.util.Collections;
 import java.util.Date;
 import java.util.EnumSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
 import org.apache.commons.lang.StringUtils;
+import org.apache.hadoop.hbase.client.HBaseAdmin;
 import org.apache.kylin.common.KylinConfig;
 import org.apache.kylin.common.persistence.RootPersistentEntity;
 import org.apache.kylin.common.util.CliCommandExecutor;
+import org.apache.kylin.common.util.HadoopUtil;
+import org.apache.kylin.common.util.Pair;
 import org.apache.kylin.cube.CubeInstance;
 import org.apache.kylin.cube.CubeManager;
 import org.apache.kylin.cube.CubeSegment;
@@ -41,8 +45,12 @@ import org.apache.kylin.cube.cuboid.CuboidScheduler;
 import org.apache.kylin.cube.model.CubeDesc;
 import org.apache.kylin.engine.EngineFactory;
 import org.apache.kylin.engine.mr.CubingJob;
+import org.apache.kylin.engine.mr.JobBuilderSupport;
 import org.apache.kylin.engine.mr.common.CuboidRecommenderUtil;
+import org.apache.kylin.job.JobInstance;
 import org.apache.kylin.job.common.PatternedLogger;
+import org.apache.kylin.job.constant.JobStatusEnum;
+import org.apache.kylin.job.constant.JobTimeFilterEnum;
 import org.apache.kylin.job.exception.JobException;
 import org.apache.kylin.job.execution.DefaultChainedExecutable;
 import org.apache.kylin.job.execution.ExecutableState;
@@ -51,14 +59,17 @@ import org.apache.kylin.metadata.cachesync.Broadcaster;
 import org.apache.kylin.metadata.draft.Draft;
 import org.apache.kylin.metadata.model.DataModelDesc;
 import org.apache.kylin.metadata.model.FunctionDesc;
+import org.apache.kylin.metadata.model.IStorageAware;
 import org.apache.kylin.metadata.model.MeasureDesc;
 import org.apache.kylin.metadata.model.SegmentRange;
 import org.apache.kylin.metadata.model.SegmentStatusEnum;
+import org.apache.kylin.metadata.model.TableDesc;
 import org.apache.kylin.metadata.project.ProjectInstance;
 import org.apache.kylin.metadata.project.ProjectManager;
 import org.apache.kylin.metadata.project.RealizationEntry;
 import org.apache.kylin.metadata.realization.RealizationStatusEnum;
 import org.apache.kylin.metadata.realization.RealizationType;
+import org.apache.kylin.metrics.property.QueryCubePropertyEnum;
 import org.apache.kylin.rest.constant.Constant;
 import org.apache.kylin.rest.exception.BadRequestException;
 import org.apache.kylin.rest.exception.ForbiddenException;
@@ -73,6 +84,12 @@ import org.apache.kylin.rest.response.HBaseResponse;
 import org.apache.kylin.rest.response.MetricsResponse;
 import org.apache.kylin.rest.util.AclEvaluate;
 import org.apache.kylin.rest.util.ValidateUtil;
+import org.apache.kylin.storage.hbase.HBaseConnection;
+import org.apache.kylin.storage.hbase.util.StorageCleanUtil;
+import org.apache.kylin.storage.hybrid.HybridInstance;
+import org.apache.kylin.stream.coordinator.StreamMetadataStoreFactory;
+import org.apache.kylin.stream.coordinator.client.CoordinatorClient;
+import org.apache.kylin.stream.coordinator.client.CoordinatorClientFactory;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.InitializingBean;
@@ -88,7 +105,6 @@ import com.google.common.cache.Cache;
 import com.google.common.cache.CacheBuilder;
 import com.google.common.collect.Lists;
 import com.google.common.collect.Maps;
-import com.google.common.collect.Sets;
 
 /**
  * Stateless & lightweight service facade of cube management functions.
@@ -115,7 +131,14 @@ public class CubeService extends BasicService implements InitializingBean {
     private ModelService modelService;
 
     @Autowired
+    @Qualifier("queryService")
+    private QueryService queryService;
+
+    @Autowired
     private AclEvaluate aclEvaluate;
+
+    @Autowired
+    private HybridService hybridService;
 
     public boolean isCubeNameVaildate(final String cubeName) {
         if (StringUtils.isEmpty(cubeName) || !ValidateUtil.isAlphanumericUnderscore(cubeName)) {
@@ -157,13 +180,17 @@ public class CubeService extends BasicService implements InitializingBean {
         List<CubeInstance> filterCubes = new ArrayList<CubeInstance>();
         for (CubeInstance cubeInstance : filterModelCubes) {
             boolean isCubeMatch = (null == cubeName)
-                    || (!exactMatch && cubeInstance.getName().toLowerCase().contains(cubeName.toLowerCase()))
-                    || (exactMatch && cubeInstance.getName().toLowerCase().equals(cubeName.toLowerCase()));
+                    || (!exactMatch && cubeInstance.getName().toLowerCase(Locale.ROOT)
+                            .contains(cubeName.toLowerCase(Locale.ROOT)))
+                    || (exactMatch && cubeInstance.getName().toLowerCase(Locale.ROOT)
+                            .equals(cubeName.toLowerCase(Locale.ROOT)));
 
             if (isCubeMatch) {
                 filterCubes.add(cubeInstance);
             }
         }
+        // sort the cube list by create time in descending order
+        filterCubes.sort((o1, o2) -> Long.compare(o2.getCreateTimeUTC(), o1.getCreateTimeUTC()));
 
         return filterCubes;
     }
@@ -190,11 +217,11 @@ public class CubeService extends BasicService implements InitializingBean {
         String cubeName = desc.getName();
 
         if (getCubeManager().getCube(cubeName) != null) {
-            throw new BadRequestException(String.format(msg.getCUBE_ALREADY_EXIST(), cubeName));
+            throw new BadRequestException(String.format(Locale.ROOT, msg.getCUBE_ALREADY_EXIST(), cubeName));
         }
 
         if (getCubeDescManager().getCubeDesc(desc.getName()) != null) {
-            throw new BadRequestException(String.format(msg.getCUBE_DESC_ALREADY_EXIST(), desc.getName()));
+            throw new BadRequestException(String.format(Locale.ROOT, msg.getCUBE_DESC_ALREADY_EXIST(), desc.getName()));
         }
 
         String owner = SecurityContextHolder.getContext().getAuthentication().getName();
@@ -263,12 +290,12 @@ public class CubeService extends BasicService implements InitializingBean {
         final List<CubingJob> cubingJobs = jobService.listJobsByRealizationName(cube.getName(), null,
                 EnumSet.of(ExecutableState.READY, ExecutableState.RUNNING));
         if (!cubingJobs.isEmpty()) {
-            throw new BadRequestException(String.format(msg.getDISCARD_JOB_FIRST(), cube.getName()));
+            throw new BadRequestException(String.format(Locale.ROOT, msg.getDISCARD_JOB_FIRST(), cube.getName()));
         }
 
         //double check again
         if (!forceUpdate && !cube.getDescriptor().consistentWith(desc)) {
-            throw new BadRequestException(String.format(msg.getINCONSISTENT_CUBE_DESC(), desc.getName()));
+            throw new BadRequestException(String.format(Locale.ROOT, msg.getINCONSISTENT_CUBE_DESC(), desc.getName()));
         }
 
         CubeDesc updatedCubeDesc = getCubeDescManager().updateCubeDesc(desc);
@@ -292,7 +319,7 @@ public class CubeService extends BasicService implements InitializingBean {
         final List<CubingJob> cubingJobs = jobService.listJobsByRealizationName(cube.getName(), null,
                 EnumSet.of(ExecutableState.READY, ExecutableState.RUNNING, ExecutableState.ERROR));
         if (!cubingJobs.isEmpty()) {
-            throw new BadRequestException(String.format(msg.getDISCARD_JOB_FIRST(), cube.getName()));
+            throw new BadRequestException(String.format(Locale.ROOT, msg.getDISCARD_JOB_FIRST(), cube.getName()));
         }
 
         try {
@@ -302,8 +329,41 @@ public class CubeService extends BasicService implements InitializingBean {
             //ignore the exception
         }
 
+        // remove from hybrid definition
+        ProjectInstance projectInstance = cube.getProjectInstance();
+        List<RealizationEntry> hybridRealizationEntries = projectInstance.getRealizationEntries(RealizationType.HYBRID);
+
+        if (hybridRealizationEntries != null) {
+            for (RealizationEntry entry : hybridRealizationEntries) {
+                HybridInstance instance = getHybridManager().getHybridInstance(entry.getRealization());
+                List<RealizationEntry> cubeRealizationEntries = instance.getRealizationEntries();
+
+                boolean needUpdateHybrid = false;
+                for (RealizationEntry cubeRealizationEntry : cubeRealizationEntries) {
+                    if (cube.getName().equals(cubeRealizationEntry.getRealization())) {
+                        needUpdateHybrid = true;
+                        cubeRealizationEntries.remove(cubeRealizationEntry);
+                        break;
+                    }
+                }
+
+                if (needUpdateHybrid) {
+                    String[] cubeNames = new String[cubeRealizationEntries.size()];
+                    for (int i = 0; i < cubeRealizationEntries.size(); i++) {
+                        cubeNames[i] = cubeRealizationEntries.get(i).getRealization();
+                    }
+                    hybridService.updateHybridCubeNoCheck(instance.getName(), projectInstance.getName(),
+                            cube.getModel().getName(), cubeNames);
+                }
+            }
+        }
+
+        List<CubeSegment> toRemoveSegs = cube.getSegments();
+
         int cubeNum = getCubeManager().getCubesByDesc(cube.getDescriptor().getName()).size();
         getCubeManager().dropCube(cube.getName(), cubeNum == 1);//only delete cube desc when no other cube is using it
+
+        cleanSegmentStorage(toRemoveSegs);
     }
 
     /**
@@ -323,17 +383,17 @@ public class CubeService extends BasicService implements InitializingBean {
         final List<CubingJob> cubingJobs = jobService.listJobsByRealizationName(cubeName, null, EnumSet
                 .of(ExecutableState.READY, ExecutableState.RUNNING, ExecutableState.ERROR, ExecutableState.STOPPED));
         if (!cubingJobs.isEmpty()) {
-            throw new BadRequestException(String.format(msg.getDISCARD_JOB_FIRST(), cubeName));
+            throw new BadRequestException(String.format(Locale.ROOT, msg.getDISCARD_JOB_FIRST(), cubeName));
         }
 
         RealizationStatusEnum ostatus = cube.getStatus();
         if (null != ostatus && !RealizationStatusEnum.DISABLED.equals(ostatus)) {
-            throw new BadRequestException(String.format(msg.getPURGE_NOT_DISABLED_CUBE(), cubeName, ostatus));
+            throw new BadRequestException(
+                    String.format(Locale.ROOT, msg.getPURGE_NOT_DISABLED_CUBE(), cubeName, ostatus));
         }
 
         this.releaseAllSegments(cube);
         return cube;
-
     }
 
     /**
@@ -351,10 +411,30 @@ public class CubeService extends BasicService implements InitializingBean {
 
         RealizationStatusEnum ostatus = cube.getStatus();
         if (null != ostatus && !RealizationStatusEnum.READY.equals(ostatus)) {
-            throw new BadRequestException(String.format(msg.getDISABLE_NOT_READY_CUBE(), cubeName, ostatus));
+            throw new BadRequestException(
+                    String.format(Locale.ROOT, msg.getDISABLE_NOT_READY_CUBE(), cubeName, ostatus));
         }
 
-        return getCubeManager().updateCubeStatus(cube, RealizationStatusEnum.DISABLED);
+        boolean isStreamingCube = cube.getDescriptor().isStreamingCube();
+
+        boolean cubeStatusUpdated = false;
+        try {
+            CubeInstance cubeInstance = getCubeManager().updateCubeStatus(cube, RealizationStatusEnum.DISABLED);
+            cubeStatusUpdated = true;
+            // for streaming cube.
+            if (isStreamingCube) {
+                getStreamingCoordinator().unAssignCube(cubeName);
+            }
+            return cubeInstance;
+        } catch (Exception e) {
+            cube.setStatus(ostatus);
+            // roll back if cube status updated
+            if (cubeStatusUpdated) {
+                logger.info("roll back cube status to:{}", ostatus);
+                getCubeManager().updateCubeStatus(cube, ostatus);
+            }
+            throw e;
+        }
     }
 
     public void checkEnableCubeCondition(CubeInstance cube) {
@@ -365,16 +445,17 @@ public class CubeService extends BasicService implements InitializingBean {
         RealizationStatusEnum ostatus = cube.getStatus();
 
         if (!cube.getStatus().equals(RealizationStatusEnum.DISABLED)) {
-            throw new BadRequestException(String.format(msg.getENABLE_NOT_DISABLED_CUBE(), cubeName, ostatus));
+            throw new BadRequestException(
+                    String.format(Locale.ROOT, msg.getENABLE_NOT_DISABLED_CUBE(), cubeName, ostatus));
         }
 
-        if (cube.getSegments(SegmentStatusEnum.READY).size() == 0) {
-            throw new BadRequestException(String.format(msg.getNO_READY_SEGMENT(), cubeName));
+        if (cube.getSegments(SegmentStatusEnum.READY).size() == 0 && !cube.getDescriptor().isStreamingCube()) {
+            throw new BadRequestException(String.format(Locale.ROOT, msg.getNO_READY_SEGMENT(), cubeName));
         }
 
         if (!cube.getDescriptor().checkSignature()) {
             throw new BadRequestException(
-                    String.format(msg.getINCONSISTENT_CUBE_DESC_SIGNATURE(), cube.getDescriptor()));
+                    String.format(Locale.ROOT, msg.getINCONSISTENT_CUBE_DESC_SIGNATURE(), cube.getDescriptor()));
         }
     }
 
@@ -385,7 +466,29 @@ public class CubeService extends BasicService implements InitializingBean {
      * @throws IOException
      */
     public CubeInstance enableCube(CubeInstance cube) throws IOException {
-        return getCubeManager().updateCubeStatus(cube, RealizationStatusEnum.READY);
+        boolean cubeStatusUpdated = false;
+        RealizationStatusEnum ostatus = cube.getStatus();
+        try {
+            CubeInstance cubeInstance = getCubeManager().updateCubeStatus(cube, RealizationStatusEnum.READY);
+            cubeStatusUpdated = true;
+            // for streaming cube.
+            if (cube.getDescriptor().isStreamingCube()) {
+                getStreamingCoordinator().assignCube(cube.getName());
+            }
+            return cubeInstance;
+        } catch (Exception e) {
+            cube.setStatus(ostatus);
+            // roll back if cube status updated
+            if (cubeStatusUpdated) {
+                logger.info("roll back cube status to:{}", ostatus);
+                getCubeManager().updateCubeStatus(cube, ostatus);
+            }
+            throw e;
+        }
+    }
+
+    private CoordinatorClient getStreamingCoordinator() {
+        return CoordinatorClientFactory.createCoordinatorClient(StreamMetadataStoreFactory.getStreamMetaDataStore());
     }
 
     public MetricsResponse calculateMetrics(MetricsRequest request) {
@@ -428,7 +531,8 @@ public class CubeService extends BasicService implements InitializingBean {
         }
 
         hr = new HBaseResponse();
-        if ("hbase".equals(getConfig().getMetadataUrl().getScheme())) {
+        CubeInstance cube = CubeManager.getInstance(getConfig()).getCube(cubeName);
+        if (cube.getStorageType() == IStorageAware.ID_HBASE || cube.getStorageType() == IStorageAware.ID_SHARDED_HBASE || cube.getStorageType() == IStorageAware.ID_REALTIME_AND_HBASE) {
             try {
                 logger.debug("Loading HTable info " + cubeName + ", " + tableName);
 
@@ -455,8 +559,14 @@ public class CubeService extends BasicService implements InitializingBean {
     public CubeInstance rebuildLookupSnapshot(CubeInstance cube, String segmentName, String lookupTable)
             throws IOException {
         aclEvaluate.checkProjectOperationPermission(cube);
+        Message msg = MsgPicker.getMsg();
+        TableDesc tableDesc = getTableManager().getTableDesc(lookupTable, cube.getProject());
+        if (tableDesc.isView()) {
+            throw new BadRequestException(
+                    String.format(Locale.ROOT, msg.getREBUILD_SNAPSHOT_OF_VIEW(), tableDesc.getName()));
+        }
         CubeSegment seg = cube.getSegment(segmentName, SegmentStatusEnum.READY);
-        getCubeManager().buildSnapshotTable(seg, lookupTable);
+        getCubeManager().buildSnapshotTable(seg, lookupTable, null);
 
         return cube;
     }
@@ -474,19 +584,63 @@ public class CubeService extends BasicService implements InitializingBean {
         }
 
         if (toDelete == null) {
-            throw new BadRequestException(String.format(msg.getSEG_NOT_FOUND(), segmentName));
+            throw new BadRequestException(String.format(Locale.ROOT, msg.getSEG_NOT_FOUND(), segmentName));
         }
 
         if (toDelete.getStatus() != SegmentStatusEnum.READY) {
-            throw new BadRequestException(String.format(msg.getDELETE_NOT_READY_SEG(), segmentName));
+            if (toDelete.getStatus() == SegmentStatusEnum.NEW) {
+                if (!isOrphonSegment(cube, toDelete.getUuid())) {
+                    throw new BadRequestException(
+                            String.format(Locale.ROOT, msg.getDELETE_NOT_READY_SEG(), segmentName));
+                }
+            } else {
+                throw new BadRequestException(String.format(Locale.ROOT, msg.getDELETE_NOT_READY_SEG(), segmentName));
+            }
         }
 
         if (!segmentName.equals(cube.getSegments().get(0).getName())
                 && !segmentName.equals(cube.getSegments().get(cube.getSegments().size() - 1).getName())) {
-            logger.warn(String.format(msg.getDELETE_SEGMENT_CAUSE_GAPS(), cube.getName(), segmentName));
+            logger.warn(String.format(Locale.ROOT, msg.getDELETE_SEGMENT_CAUSE_GAPS(), cube.getName(), segmentName));
         }
 
-        return CubeManager.getInstance(getConfig()).updateCubeDropSegments(cube, toDelete);
+        CubeInstance cubeInstance = CubeManager.getInstance(getConfig()).updateCubeDropSegments(cube, toDelete);
+
+        cleanSegmentStorage(Collections.singletonList(toDelete));
+
+        return cubeInstance;
+    }
+
+    // clean segment data in hbase and hdfs
+    private void cleanSegmentStorage(List<CubeSegment> toRemoveSegs) throws IOException {
+        if (!KylinConfig.getInstanceFromEnv().cleanStorageAfterDelOperation()) {
+            return;
+        }
+
+        if (toRemoveSegs != null && !toRemoveSegs.isEmpty()) {
+            List<String> toDropHTables = Lists.newArrayListWithCapacity(toRemoveSegs.size());
+            List<String> toDelHDFSPaths = Lists.newArrayListWithCapacity(toRemoveSegs.size());
+            for (CubeSegment seg : toRemoveSegs) {
+                toDropHTables.add(seg.getStorageLocationIdentifier());
+                toDelHDFSPaths.add(JobBuilderSupport.getJobWorkingDir(seg.getConfig().getHdfsWorkingDirectory(), seg.getLastBuildJobID()));
+            }
+
+            StorageCleanUtil.dropHTables(new HBaseAdmin(HBaseConnection.getCurrentHBaseConfiguration()), toDropHTables);
+            StorageCleanUtil.deleteHDFSPath(HadoopUtil.getWorkingFileSystem(), toDelHDFSPaths);
+        }
+    }
+
+    public boolean isOrphonSegment(CubeInstance cube, String segId) {
+        List<JobInstance> jobInstances = jobService.searchJobsByCubeName(
+                cube.getName(), cube.getProject(), Lists.newArrayList(JobStatusEnum.NEW, JobStatusEnum.PENDING,
+                        JobStatusEnum.RUNNING, JobStatusEnum.ERROR, JobStatusEnum.STOPPED),
+                JobTimeFilterEnum.ALL, JobService.JobSearchMode.CUBING_ONLY);
+        for (JobInstance jobInstance : jobInstances) {
+            // if there are segment related jobs, can not delete this segment.
+            if (segId.equals(jobInstance.getRelatedSegment())) {
+                return false;
+            }
+        }
+        return true;
     }
 
     protected void releaseAllJobs(CubeInstance cube) {
@@ -508,18 +662,19 @@ public class CubeService extends BasicService implements InitializingBean {
     private void releaseAllSegments(CubeInstance cube) throws IOException {
         releaseAllJobs(cube);
 
-        CubeUpdate update = new CubeUpdate(cube.latestCopyForWrite());
-        update.setToRemoveSegs(cube.getSegments().toArray(new CubeSegment[cube.getSegments().size()]));
-        update.setCuboids(Maps.<Long, Long> newHashMap());
-        update.setCuboidsRecommend(Sets.<Long> newHashSet());
-        CubeManager.getInstance(getConfig()).updateCube(update);
+        List<CubeSegment> toRemoveSegs = cube.getSegments();
+
+        // remove from metadata
+        getCubeManager().clearSegments(cube);
+
+        cleanSegmentStorage(toRemoveSegs);
     }
 
     public void updateOnNewSegmentReady(String cubeName) {
         final KylinConfig kylinConfig = KylinConfig.getInstanceFromEnv();
         String serverMode = kylinConfig.getServerMode();
-        if (Constant.SERVER_MODE_JOB.equals(serverMode.toLowerCase())
-                || Constant.SERVER_MODE_ALL.equals(serverMode.toLowerCase())) {
+        if (Constant.SERVER_MODE_JOB.equals(serverMode.toLowerCase(Locale.ROOT))
+                || Constant.SERVER_MODE_ALL.equals(serverMode.toLowerCase(Locale.ROOT))) {
             CubeInstance cube = getCubeManager().getCube(cubeName);
             if (cube != null) {
                 CubeSegment seg = cube.getLatestBuiltSegment();
@@ -602,18 +757,20 @@ public class CubeService extends BasicService implements InitializingBean {
         }
         if (!ValidateUtil.isAlphanumericUnderscore(cubeName)) {
             logger.info("Invalid Cube name {}, only letters, numbers and underscore supported.", cubeName);
-            throw new BadRequestException(String.format(msg.getINVALID_CUBE_NAME(), cubeName));
+            throw new BadRequestException(String.format(Locale.ROOT, msg.getINVALID_CUBE_NAME(), cubeName));
         }
 
         if (!isDraft) {
             DataModelDesc modelDesc = modelService.getDataModelManager().getDataModelDesc(desc.getModelName());
             if (modelDesc == null) {
-                throw new BadRequestException(String.format(msg.getMODEL_NOT_FOUND(), desc.getModelName()));
+                throw new BadRequestException(
+                        String.format(Locale.ROOT, msg.getMODEL_NOT_FOUND(), desc.getModelName()));
             }
 
             if (modelDesc.isDraft()) {
                 logger.info("Cannot use draft model.");
-                throw new BadRequestException(String.format(msg.getUSE_DRAFT_MODEL(), desc.getModelName()));
+                throw new BadRequestException(
+                        String.format(Locale.ROOT, msg.getUSE_DRAFT_MODEL(), desc.getModelName()));
             }
         }
     }
@@ -675,7 +832,8 @@ public class CubeService extends BasicService implements InitializingBean {
 
         try {
             if (cube.getSegments().size() != 0 && !cube.getDescriptor().consistentWith(desc)) {
-                throw new BadRequestException(String.format(msg.getINCONSISTENT_CUBE_DESC(), desc.getName()));
+                throw new BadRequestException(
+                        String.format(Locale.ROOT, msg.getINCONSISTENT_CUBE_DESC(), desc.getName()));
             }
 
             desc = updateCubeAndDesc(cube, desc, projectName, true);
@@ -710,9 +868,13 @@ public class CubeService extends BasicService implements InitializingBean {
             RootPersistentEntity e = d.getEntity();
             if (e instanceof CubeDesc) {
                 CubeDesc c = (CubeDesc) e;
-                if ((cubeName == null || (exactMatch && cubeName.toLowerCase().equals(c.getName().toLowerCase()))
-                        || (!exactMatch && c.getName().toLowerCase().contains(cubeName.toLowerCase())))
-                        && (modelName == null || modelName.toLowerCase().equals(c.getModelName().toLowerCase()))) {
+                if ((cubeName == null
+                        || (exactMatch
+                                && cubeName.toLowerCase(Locale.ROOT).equals(c.getName().toLowerCase(Locale.ROOT)))
+                        || (!exactMatch
+                                && c.getName().toLowerCase(Locale.ROOT).contains(cubeName.toLowerCase(Locale.ROOT))))
+                        && (modelName == null || modelName.toLowerCase(Locale.ROOT)
+                                .equals(c.getModelName().toLowerCase(Locale.ROOT)))) {
                     // backward compability for percentile
                     if (c.getMeasures() != null) {
                         for (MeasureDesc m : c.getMeasures()) {
@@ -812,6 +974,12 @@ public class CubeService extends BasicService implements InitializingBean {
     }
 
     /** cube planner services */
+    public Map<Long, Long> getRecommendCuboidStatistics(CubeInstance cube, Map<Long, Long> hitFrequencyMap,
+            Map<Long, Map<Long, Pair<Long, Long>>> rollingUpCountSourceMap) throws IOException {
+        aclEvaluate.checkProjectAdminPermission(cube.getProject());
+        return CuboidRecommenderUtil.getRecommendCuboidList(cube, hitFrequencyMap, rollingUpCountSourceMap);
+    }
+
     public Map<Long, Long> formatQueryCount(List<List<String>> orgQueryCount) {
         Map<Long, Long> formattedQueryCount = Maps.newLinkedHashMap();
         for (List<String> hit : orgQueryCount) {
@@ -820,20 +988,58 @@ public class CubeService extends BasicService implements InitializingBean {
         return formattedQueryCount;
     }
 
-    public Map<Long, Map<Long, Long>> formatRollingUpCount(List<List<String>> orgRollingUpCount) {
-        Map<Long, Map<Long, Long>> formattedRollingUpCount = Maps.newLinkedHashMap();
+    public Map<Long, Map<Long, Pair<Long, Long>>> formatRollingUpStats(List<List<String>> orgRollingUpCount) {
+        Map<Long, Map<Long, Pair<Long, Long>>> formattedRollingUpStats = Maps.newLinkedHashMap();
         for (List<String> rollingUp : orgRollingUpCount) {
-            Map<Long, Long> childMap = Maps.newLinkedHashMap();
-            childMap.put(Long.parseLong(rollingUp.get(1)), (long) Double.parseDouble(rollingUp.get(2)));
-            formattedRollingUpCount.put(Long.parseLong(rollingUp.get(0)), childMap);
+            Map<Long, Pair<Long, Long>> childMap = Maps.newLinkedHashMap();
+            Long srcCuboid = Long.parseLong(rollingUp.get(0));
+            Long tgtCuboid = Long.parseLong(rollingUp.get(1));
+            Long rollupCount = (long) Double.parseDouble(rollingUp.get(2));
+            Long returnCount = (long) Double.parseDouble(rollingUp.get(3));
+            childMap.put(tgtCuboid, new Pair<>(rollupCount, returnCount));
+            formattedRollingUpStats.put(srcCuboid, childMap);
         }
-        return formattedRollingUpCount;
+        return formattedRollingUpStats;
     }
 
-    public Map<Long, Long> getRecommendCuboidStatistics(CubeInstance cube, Map<Long, Long> hitFrequencyMap,
-            Map<Long, Map<Long, Long>> rollingUpCountSourceMap) throws IOException {
-        aclEvaluate.checkProjectAdminPermission(cube.getProject());
-        return CuboidRecommenderUtil.getRecommendCuboidList(cube, hitFrequencyMap, rollingUpCountSourceMap);
+    public Map<Long, Long> getCuboidHitFrequency(String cubeName, boolean isCuboidSource) {
+        String cuboidColumn = isCuboidSource ? QueryCubePropertyEnum.CUBOID_SOURCE.toString()
+                : QueryCubePropertyEnum.CUBOID_TARGET.toString();
+        String hitMeasure = QueryCubePropertyEnum.WEIGHT_PER_HIT.toString();
+        String table = getMetricsManager().getSystemTableFromSubject(getConfig().getKylinMetricsSubjectQueryCube());
+        String sql = "select " + cuboidColumn + ", sum(" + hitMeasure + ")" //
+                + " from " + table//
+                + " where " + QueryCubePropertyEnum.CUBE.toString() + " = '" + cubeName + "'" //
+                + " group by " + cuboidColumn;
+        List<List<String>> orgHitFrequency = queryService.querySystemCube(sql).getResults();
+        return formatQueryCount(orgHitFrequency);
+    }
+
+    public Map<Long, Map<Long, Pair<Long, Long>>> getCuboidRollingUpStats(String cubeName) {
+        String cuboidSource = QueryCubePropertyEnum.CUBOID_SOURCE.toString();
+        String cuboidTgt = QueryCubePropertyEnum.CUBOID_TARGET.toString();
+        String aggCount = QueryCubePropertyEnum.AGGR_COUNT.toString();
+        String returnCount = QueryCubePropertyEnum.RETURN_COUNT.toString();
+        String table = getMetricsManager().getSystemTableFromSubject(getConfig().getKylinMetricsSubjectQueryCube());
+        String sql = "select " + cuboidSource + ", " + cuboidTgt + ", avg(" + aggCount + "), avg(" + returnCount + ")"//
+                + " from " + table //
+                + " where " + QueryCubePropertyEnum.CUBE.toString() + " = '" + cubeName + "' " //
+                + " group by " + cuboidSource + ", " + cuboidTgt;
+        List<List<String>> orgRollingUpCount = queryService.querySystemCube(sql).getResults();
+        return formatRollingUpStats(orgRollingUpCount);
+    }
+
+    public Map<Long, Long> getCuboidQueryMatchCount(String cubeName) {
+        String cuboidSource = QueryCubePropertyEnum.CUBOID_SOURCE.toString();
+        String hitMeasure = QueryCubePropertyEnum.WEIGHT_PER_HIT.toString();
+        String table = getMetricsManager().getSystemTableFromSubject(getConfig().getKylinMetricsSubjectQueryCube());
+        String sql = "select " + cuboidSource + ", sum(" + hitMeasure + ")" //
+                + " from " + table //
+                + " where " + QueryCubePropertyEnum.CUBE.toString() + " = '" + cubeName + "'" //
+                + " and " + QueryCubePropertyEnum.IF_MATCH.toString() + " = true" //
+                + " group by " + cuboidSource;
+        List<List<String>> orgMatchHitFrequency = queryService.querySystemCube(sql).getResults();
+        return formatQueryCount(orgMatchHitFrequency);
     }
 
     @PreAuthorize(Constant.ACCESS_HAS_ROLE_ADMIN
@@ -859,8 +1065,8 @@ public class CubeService extends BasicService implements InitializingBean {
                 "Destination configuration should not be empty.");
 
         String stringBuilder = ("%s/bin/kylin.sh org.apache.kylin.tool.CubeMigrationCLI %s %s %s %s %s %s true true");
-        String cmd = String.format(stringBuilder, KylinConfig.getKylinHome(), srcCfgUri, dstCfgUri, cube.getName(),
-                projectName, config.isAutoMigrateCubeCopyAcl(), config.isAutoMigrateCubePurge());
+        String cmd = String.format(Locale.ROOT, stringBuilder, KylinConfig.getKylinHome(), srcCfgUri, dstCfgUri,
+                cube.getName(), projectName, config.isAutoMigrateCubeCopyAcl(), config.isAutoMigrateCubePurge());
 
         logger.info("One click migration cmd: " + cmd);
 

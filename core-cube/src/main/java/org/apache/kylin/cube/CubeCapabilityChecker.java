@@ -24,11 +24,13 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Set;
 
+import org.apache.commons.collections.CollectionUtils;
 import org.apache.commons.lang.StringUtils;
 import org.apache.kylin.cube.model.CubeDesc;
 import org.apache.kylin.measure.MeasureType;
 import org.apache.kylin.measure.basic.BasicMeasureType;
 import org.apache.kylin.metadata.filter.UDF.MassInTupleFilter;
+import org.apache.kylin.metadata.model.DynamicFunctionDesc;
 import org.apache.kylin.metadata.model.FunctionDesc;
 import org.apache.kylin.metadata.model.IStorageAware;
 import org.apache.kylin.metadata.model.MeasureDesc;
@@ -70,12 +72,15 @@ public class CubeCapabilityChecker {
             //1. dimension as measure
 
             if (!unmatchedAggregations.isEmpty()) {
+                removeUnmatchedGroupingAgg(unmatchedAggregations);
                 tryDimensionAsMeasures(unmatchedAggregations, result,
                         cube.getDescriptor().listDimensionColumnsIncludingDerived());
             }
         } else {
-            //for non query-on-facttable 
-            if (cube.getSegments().get(0).getSnapshots().containsKey(digest.factTable)) {
+            //for non query-on-facttable
+            CubeSegment latestReadySeg = cube.getLatestReadySegment();
+            if ((latestReadySeg != null && latestReadySeg.getSnapshots().containsKey(digest.factTable))
+                    || cube.getSnapshots().containsKey(digest.factTable)) {
 
                 Set<TblColRef> dimCols = Sets.newHashSet(cube.getModel().findFirstTable(digest.factTable).getColumns());
 
@@ -118,19 +123,22 @@ public class CubeCapabilityChecker {
                 && MassInTupleFilter.containsMassInTupleFilter(digest.filter)) {
             logger.info(
                     "Exclude cube " + cube.getName() + " because only v2 storage + v2 query engine supports massin");
-            result.incapableCause = CapabilityResult.IncapableCause.create(CapabilityResult.IncapableType.UNSUPPORT_MASSIN);
+            result.incapableCause = CapabilityResult.IncapableCause
+                    .create(CapabilityResult.IncapableType.UNSUPPORT_MASSIN);
             return result;
         }
 
         if (digest.limitPrecedesAggr) {
             logger.info("Exclude cube " + cube.getName() + " because there's limit preceding aggregation");
-            result.incapableCause = CapabilityResult.IncapableCause.create(CapabilityResult.IncapableType.LIMIT_PRECEDE_AGGR);
+            result.incapableCause = CapabilityResult.IncapableCause
+                    .create(CapabilityResult.IncapableType.LIMIT_PRECEDE_AGGR);
             return result;
         }
 
         if (digest.isRawQuery && rootFactTable.equals(digest.factTable)) {
             if (cube.getConfig().isDisableCubeNoAggSQL()) {
-                result.incapableCause = CapabilityResult.IncapableCause.create(CapabilityResult.IncapableType.UNSUPPORT_RAWQUERY);
+                result.incapableCause = CapabilityResult.IncapableCause
+                        .create(CapabilityResult.IncapableType.UNSUPPORT_RAWQUERY);
                 return result;
             } else {
                 result.influences.add(new CapabilityInfluence() {
@@ -155,10 +163,12 @@ public class CubeCapabilityChecker {
     private static Collection<TblColRef> getDimensionColumns(SQLDigest sqlDigest) {
         Collection<TblColRef> groupByColumns = sqlDigest.groupbyColumns;
         Collection<TblColRef> filterColumns = sqlDigest.filterColumns;
+        Collection<TblColRef> rtDimColumns = sqlDigest.rtDimensionColumns;
 
         Collection<TblColRef> dimensionColumns = new HashSet<TblColRef>();
         dimensionColumns.addAll(groupByColumns);
         dimensionColumns.addAll(filterColumns);
+        dimensionColumns.addAll(rtDimColumns);
         return dimensionColumns;
     }
 
@@ -171,13 +181,44 @@ public class CubeCapabilityChecker {
 
     private static Set<FunctionDesc> unmatchedAggregations(Collection<FunctionDesc> aggregations, CubeInstance cube) {
         HashSet<FunctionDesc> result = Sets.newHashSet(aggregations);
+
         CubeDesc cubeDesc = cube.getDescriptor();
-        result.removeAll(cubeDesc.listAllFunctions());
+        List<FunctionDesc> definedFuncs = cubeDesc.listAllFunctions();
+
+        // check normal aggregations
+        result.removeAll(definedFuncs);
+
+        // check dynamic aggregations
+        Iterator<FunctionDesc> funcIterator = result.iterator();
+        while (funcIterator.hasNext()) {
+            FunctionDesc entry = funcIterator.next();
+            if (entry instanceof DynamicFunctionDesc) {
+                DynamicFunctionDesc dynFunc = (DynamicFunctionDesc) entry;
+                // Filter columns cannot be derived
+                Collection<TblColRef> definedCols = dynFunc.ifFriendlyForDerivedFilter()
+                        ? cubeDesc.listDimensionColumnsIncludingDerived()
+                        : cubeDesc.listDimensionColumnsExcludingDerived(true);
+                Set<TblColRef> filterCols = Sets.newHashSet(dynFunc.getFilterColumnSet());
+                filterCols.removeAll(definedCols);
+                if (!filterCols.isEmpty()) {
+                    continue;
+                }
+
+                // All inner funcs should be defined
+                Set<FunctionDesc> innerFuncSet = Sets.newHashSet(dynFunc.getRuntimeFuncs());
+                innerFuncSet.removeAll(definedFuncs);
+                if (!innerFuncSet.isEmpty()) {
+                    continue;
+                }
+
+                funcIterator.remove();
+            }
+        }
         return result;
     }
 
     private static void tryDimensionAsMeasures(Collection<FunctionDesc> unmatchedAggregations, CapabilityResult result,
-                                               Set<TblColRef> dimCols) {
+            Set<TblColRef> dimCols) {
 
         Iterator<FunctionDesc> it = unmatchedAggregations.iterator();
         while (it.hasNext()) {
@@ -185,6 +226,7 @@ public class CubeCapabilityChecker {
 
             // let calcite handle count
             if (functionDesc.isCount()) {
+                logger.warn("No count measure found for column {}, will use count(1) to replace it, please note that it will count all value(include null value)", functionDesc.getParameter() == null ? "" : functionDesc.getParameter().getColRef().getName());
                 it.remove();
                 continue;
             }
@@ -206,8 +248,8 @@ public class CubeCapabilityChecker {
 
     // custom measure types can cover unmatched dimensions or measures
     private static void tryCustomMeasureTypes(Collection<TblColRef> unmatchedDimensions,
-                                              Collection<FunctionDesc> unmatchedAggregations, SQLDigest digest, CubeInstance cube,
-                                              CapabilityResult result) {
+            Collection<FunctionDesc> unmatchedAggregations, SQLDigest digest, CubeInstance cube,
+            CapabilityResult result) {
         CubeDesc cubeDesc = cube.getDescriptor();
         List<String> influencingMeasures = Lists.newArrayList();
         for (MeasureDesc measure : cubeDesc.getMeasures()) {
@@ -228,6 +270,17 @@ public class CubeCapabilityChecker {
         if (influencingMeasures.size() != 0)
             logger.info("Cube {} CapabilityInfluences: {}", cube.getCanonicalName(),
                     StringUtils.join(influencingMeasures, ","));
+    }
+
+    private static void removeUnmatchedGroupingAgg(Collection<FunctionDesc> unmatchedAggregations) {
+        if (CollectionUtils.isEmpty(unmatchedAggregations))
+            return;
+        Iterator<FunctionDesc> iterator = unmatchedAggregations.iterator();
+        while (iterator.hasNext()) {
+            if (FunctionDesc.FUNC_GROUPING.equalsIgnoreCase(iterator.next().getExpression())) {
+                iterator.remove();
+            }
+        }
     }
 
 }

@@ -245,6 +245,11 @@ public class ITKylinQueryTest extends KylinTestBase {
     }
 
     @Test
+    public void testUnionallQuery() throws Exception {
+        execAndCompQuery(getQueryFolderPrefix() + "src/test/resources/query/sql_unionall", null, true);
+    }
+
+    @Test
     public void testTimeStampAdd() throws Exception {
         execAndCompQuery(getQueryFolderPrefix() + "src/test/resources/query/sql_timestamp", null, true);
     }
@@ -261,22 +266,25 @@ public class ITKylinQueryTest extends KylinTestBase {
 
     @Test
     public void testDistinctCountQuery() throws Exception {
-        if ("left".equalsIgnoreCase(joinType)) {
-            batchExecuteQuery(getQueryFolderPrefix() + "src/test/resources/query/sql_distinct");
-        }
+        batchExecuteQuery(getQueryFolderPrefix() + "src/test/resources/query/sql_distinct");
     }
 
     @Test
     public void testTopNQuery() throws Exception {
-        if ("left".equalsIgnoreCase(joinType)) {
-            this.execAndCompQuery(getQueryFolderPrefix() + "src/test/resources/query/sql_topn", null, true);
-        }
+        this.execAndCompQuery(getQueryFolderPrefix() + "src/test/resources/query/sql_topn", null, true);
     }
 
     @Test
     public void testPreciselyDistinctCountQuery() throws Exception {
+        execAndCompQuery(getQueryFolderPrefix() + "src/test/resources/query/sql_distinct_precisely", null, true);
+    }
+
+    @Test
+    public void testPreciselyDistinctCountRollupQuery() throws Exception {
+        // the "inner" test cube uses "SegmentAppendTrieDictBuilder" which doesn't support rollup.
         if ("left".equalsIgnoreCase(joinType)) {
-            execAndCompQuery(getQueryFolderPrefix() + "src/test/resources/query/sql_distinct_precisely", null, true);
+            execAndCompQuery(getQueryFolderPrefix() + "src/test/resources/query/sql_distinct_precisely_rollup", null,
+                    true);
         }
     }
 
@@ -304,8 +312,11 @@ public class ITKylinQueryTest extends KylinTestBase {
 
     @Test
     public void testStreamingTableQuery() throws Exception {
-        execAndCompQuery(getQueryFolderPrefix() + "src/test/resources/query/sql_streaming", null, true);
+        if ("inner".equalsIgnoreCase(joinType)) {
+            execAndCompQuery(getQueryFolderPrefix() + "src/test/resources/query/sql_streaming", null, true);
+        }
     }
+
 
     @Test
     public void testTableauQuery() throws Exception {
@@ -366,13 +377,18 @@ public class ITKylinQueryTest extends KylinTestBase {
                 new File(getQueryFolderPrefix() + "src/test/resources/query/sql_limit"), ".sql");
         for (File sqlFile : sqlFiles) {
             runSQL(sqlFile, false, false);
-            assertTrue(checkFinalPushDownLimit());
+            if (sqlFile.getAbsolutePath().contains("query06.sql")) {
+                assertTrue(!checkFinalPushDownLimit());
+            } else {
+                assertTrue(checkFinalPushDownLimit());
+            }
         }
     }
 
     @Test
     public void testLimitCorrectness() throws Exception {
         this.execLimitAndValidate(getQueryFolderPrefix() + "src/test/resources/query/sql");
+
     }
 
     @Test
@@ -415,13 +431,46 @@ public class ITKylinQueryTest extends KylinTestBase {
         batchExecuteQuery(getQueryFolderPrefix() + "src/test/resources/query/sql_percentile");
     }
 
+    @Test
+    public void testExpressionQuery() throws Exception {
+        boolean ifDynamicColumnEnabled = config.isDynamicColumnEnabled();
+        if (!ifDynamicColumnEnabled) {
+            config.setProperty("kylin.query.enable-dynamic-column", "true");
+        }
+        batchExecuteQuery(getQueryFolderPrefix() + "src/test/resources/query/sql_expression");
+        if (!ifDynamicColumnEnabled) {
+            config.setProperty("kylin.query.enable-dynamic-column", "false");
+        }
+    }
+
+    @Test
+    public void testDictionaryEnumerator() throws Exception {
+        boolean ifDictEnumeratorEnabled = config.isDictionaryEnumeratorEnabled();
+        if (!ifDictEnumeratorEnabled) {
+            config.setProperty("kylin.query.enable-dict-enumerator", "true");
+        }
+        batchExecuteQuery(getQueryFolderPrefix() + "src/test/resources/query/sql_dict_enumerator");
+        if (!ifDictEnumeratorEnabled) {
+            config.setProperty("kylin.query.enable-dict-enumerator", "false");
+        }
+    }
+
+    @Test
+    public void testOrdinalQuery() throws Exception {
+        String sqlConformance = config.getCalciteExtrasProperties().getProperty("conformance");
+        if (!"LENIENT".equalsIgnoreCase(sqlConformance)) {
+            config.setProperty("kylin.query.calcite.extras-props.conformance", "LENIENT");
+        }
+        batchExecuteQuery(getQueryFolderPrefix() + "src/test/resources/query/sql_ordinal");
+        if (!"LENIENT".equalsIgnoreCase(sqlConformance)) {
+            config.setProperty("kylin.query.calcite.extras-props.conformance", sqlConformance);
+        }
+    }
 
     @Test
     public void testValues() throws Exception {
         execAndCompQuery(getQueryFolderPrefix() + "src/test/resources/query/sql_values", null, true);
     }
-
-
 
     @Test
     public void testPlan() throws Exception {
@@ -432,4 +481,3 @@ public class ITKylinQueryTest extends KylinTestBase {
             System.setProperty("calcite.debug", "false");
     }
 }
-                                                  

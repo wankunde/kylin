@@ -43,6 +43,9 @@ import com.google.common.collect.Lists;
 import com.google.common.collect.Maps;
 import com.google.common.collect.Sets;
 
+/**
+ * A metric system using a system cube to store/analyze metric information.
+ */
 public class MetricsManager {
 
     public static final String SYSTEM_PROJECT = "KYLIN_SYSTEM";
@@ -62,6 +65,9 @@ public class MetricsManager {
         return instance;
     }
 
+    /**
+     * This method is called by Spring Framework at kylinMetrics.xml
+     */
     public static void initMetricsManager(Sink systemCubeSink,
             Map<ActiveReservoir, List<Pair<String, Properties>>> sourceReporterBindProperties) {
         setSystemCubeSink(systemCubeSink);
@@ -83,6 +89,7 @@ public class MetricsManager {
             }
         }
         scSink = systemCubeSink;
+        System.gc();
     }
 
     private static void setSourceReporterBindProps(
@@ -98,10 +105,10 @@ public class MetricsManager {
                     if (ActiveReservoirReporter.class.isAssignableFrom(clz)) {
                         values.add(new Pair(clz, entry.getSecond()));
                     } else {
-                        logger.warn("The class " + clz + " is not a sub class of " + ActiveReservoir.class);
+                        logger.warn("The class {} is not a sub class of {}.", clz, ActiveReservoir.class);
                     }
                 } catch (ClassNotFoundException e) {
-                    logger.warn("Cannot find class " + entry.getFirst());
+                    logger.warn("Cannot find class {}", entry.getFirst());
                 }
             }
         }
@@ -132,7 +139,7 @@ public class MetricsManager {
             Preconditions.checkArgument(activeReservoirPointers.size() == sourceReporterBindProps.keySet().size(),
                     "Duplicate register names exist!!!");
         } else {
-            logger.info("Kylin metrics monitor is not enabled!!!");
+            logger.info("Kylin metrics monitor is not enabled");
         }
     }
 

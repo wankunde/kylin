@@ -14,15 +14,11 @@
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
-*/
+ */
 
 package org.apache.kylin.common.persistence;
 
-import java.io.ByteArrayInputStream;
 import java.io.IOException;
-import java.io.InputStream;
-import java.util.Collections;
-import java.util.List;
 import java.util.NavigableSet;
 import java.util.TreeSet;
 
@@ -41,7 +37,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import com.google.common.base.Preconditions;
-import com.google.common.collect.Lists;
 
 public class HDFSResourceStore extends ResourceStore {
 
@@ -56,27 +51,27 @@ public class HDFSResourceStore extends ResourceStore {
     public HDFSResourceStore(KylinConfig kylinConfig) throws Exception {
         this(kylinConfig, kylinConfig.getMetadataUrl());
     }
-    
+
     public HDFSResourceStore(KylinConfig kylinConfig, StorageURL metadataUrl) throws Exception {
         super(kylinConfig);
         Preconditions.checkState(HDFS_SCHEME.equals(metadataUrl.getScheme()));
-        
+
         String path = metadataUrl.getParameter("path");
         if (path == null) {
             // missing path is not expected, but don't fail it
-            path = kylinConfig.getHdfsWorkingDirectory() + "tmp_metadata";
-            logger.warn("Missing path, fall back to " + path);
+            path = kylinConfig.getHdfsWorkingDirectory(null) + "tmp_metadata";
+            logger.warn("Missing path, fall back to {}. ", path);
         }
-        
+
         fs = HadoopUtil.getFileSystem(path);
         Path metadataPath = new Path(path);
-        if (fs.exists(metadataPath) == false) {
-            logger.warn("Path not exist in HDFS, create it: " + path);
+        if (!fs.exists(metadataPath)) {
+            logger.warn("Path not exist in HDFS, create it: {}. ", path);
             createMetaFolder(metadataPath);
         }
 
         hdfsMetaPath = metadataPath;
-        logger.info("hdfs meta path : " + hdfsMetaPath.toString());
+        logger.info("hdfs meta path : {}", hdfsMetaPath);
 
     }
 
@@ -86,11 +81,20 @@ public class HDFSResourceStore extends ResourceStore {
             fs.mkdirs(metaDirName);
         }
 
-        logger.info("hdfs meta path created: " + metaDirName.toString());
+        logger.info("hdfs meta path created: {}", metaDirName);
     }
 
     @Override
-    protected NavigableSet<String> listResourcesImpl(String folderPath, boolean recursive) throws IOException {
+    protected NavigableSet<String> listResourcesImpl(String folderPath) throws IOException {
+        return listResourcesImpl(folderPath, false);
+    }
+
+    @Override
+    protected NavigableSet<String> listResourcesRecursivelyImpl(String folderPath) throws IOException {
+        return listResourcesImpl(folderPath, true);
+    }
+
+    private NavigableSet<String> listResourcesImpl(String folderPath, boolean recursive) throws IOException {
         Path p = getRealHDFSPath(folderPath);
         String prefix = folderPath.endsWith("/") ? folderPath : folderPath + "/";
         if (!fs.exists(p) || !fs.isDirectory(p)) {
@@ -106,22 +110,67 @@ public class HDFSResourceStore extends ResourceStore {
         return r.isEmpty() ? null : r;
     }
 
-    private TreeSet<String> getFilePath(Path p, String prefix) throws IOException {
+    private TreeSet<String> getFilePath(Path p, String resPathPrefix) throws IOException {
         TreeSet<String> fileList = new TreeSet<>();
         for (FileStatus fileStat : fs.listStatus(p)) {
-            fileList.add(prefix + fileStat.getPath().getName());
+            fileList.add(resPathPrefix + fileStat.getPath().getName());
         }
         return fileList;
     }
 
-    TreeSet<String> getAllFilePath(Path filePath, String prefix) throws IOException {
+    TreeSet<String> getAllFilePath(Path filePath, String resPathPrefix) throws IOException {
+        String fsPathPrefix = filePath.toUri().getPath();
+
         TreeSet<String> fileList = new TreeSet<>();
         RemoteIterator<LocatedFileStatus> it = fs.listFiles(filePath, true);
         while (it.hasNext()) {
-            String[] path = it.next().getPath().toString().split(prefix, 2);
-            fileList.add(prefix + path[1]);
+            String path = it.next().getPath().toUri().getPath();
+            if (!path.startsWith(fsPathPrefix))
+                throw new IllegalStateException("File path " + path + " is supposed to start with " + fsPathPrefix);
+
+            String resPath = resPathPrefix + path.substring(fsPathPrefix.length() + 1);
+            fileList.add(resPath);
         }
         return fileList;
+    }
+
+    @Override
+    protected void visitFolderImpl(String folderPath, boolean recursive, VisitFilter filter, boolean loadContent,
+            Visitor visitor) throws IOException {
+        Path p = getRealHDFSPath(folderPath);
+        if (!fs.exists(p) || !fs.isDirectory(p)) {
+            return;
+        }
+
+        String fsPathPrefix = p.toUri().getPath();
+        String resPathPrefix = folderPath.endsWith("/") ? folderPath : folderPath + "/";
+
+        RemoteIterator<LocatedFileStatus> it = fs.listFiles(p, recursive);
+        while (it.hasNext()) {
+            LocatedFileStatus status = it.next();
+            if (status.isDirectory())
+                continue;
+
+            String path = status.getPath().toUri().getPath();
+            if (!path.startsWith(fsPathPrefix))
+                throw new IllegalStateException("File path " + path + " is supposed to start with " + fsPathPrefix);
+
+            String resPath = resPathPrefix + path.substring(fsPathPrefix.length() + 1);
+
+            if (filter.matches(resPath, status.getModificationTime())) {
+                RawResource raw;
+                if (loadContent)
+                    raw = new RawResource(resPath, status.getModificationTime(), fs.open(status.getPath()));
+                else
+                    raw = new RawResource(resPath, status.getModificationTime());
+
+                try {
+                    visitor.visit(raw);
+                } finally {
+                    raw.close();
+                }
+            }
+        }
     }
 
     @Override
@@ -131,39 +180,16 @@ public class HDFSResourceStore extends ResourceStore {
     }
 
     @Override
-    protected List<RawResource> getAllResourcesImpl(String folderPath, long timeStart, long timeEndExclusive) throws IOException {
-        NavigableSet<String> resources = listResources(folderPath);
-        if (resources == null)
-            return Collections.emptyList();
-        List<RawResource> result = Lists.newArrayListWithCapacity(resources.size());
-        try {
-            for (String res : resources) {
-                long ts = getResourceTimestampImpl(res);
-                if (timeStart <= ts && ts < timeEndExclusive) {
-                    RawResource resource = getResourceImpl(res);
-                    if (resource != null) // can be null if is a sub-folder
-                        result.add(resource);
-                }
-            }
-        } catch (IOException ex) {
-            for (RawResource rawResource : result) {
-                IOUtils.closeQuietly(rawResource.inputStream);
-            }
-            throw ex;
-        }
-        return result;
-    }
-
-    @Override
     protected RawResource getResourceImpl(String resPath) throws IOException {
         Path p = getRealHDFSPath(resPath);
         if (fs.exists(p) && fs.isFile(p)) {
-            if (fs.getFileStatus(p).getLen() == 0) {
-                logger.warn("Zero length file: " + p.toString());
+            FileStatus fileStatus = fs.getFileStatus(p);
+            if (fileStatus.getLen() == 0) {
+                logger.warn("Zero length file: {}. ", p);
             }
             FSDataInputStream in = fs.open(p);
-            long t = in.readLong();
-            return new RawResource(in, t);
+            long ts = fileStatus.getModificationTime();
+            return new RawResource(resPath, ts, in);
         } else {
             return null;
         }
@@ -175,53 +201,62 @@ public class HDFSResourceStore extends ResourceStore {
         if (!fs.exists(p) || !fs.isFile(p)) {
             return 0;
         }
-        FSDataInputStream in = null;
         try {
-            in = fs.open(p);
-            long t = in.readLong();
-            return t;
+            return fs.getFileStatus(p).getModificationTime();
         } catch (Exception e) {
             throw new IOException("Put resource fail", e);
-        } finally {
-            IOUtils.closeQuietly(in);
         }
 
     }
 
     @Override
-    protected void putResourceImpl(String resPath, InputStream content, long ts) throws IOException {
-        logger.trace("res path : " + resPath);
+    protected void putResourceImpl(String resPath, ContentWriter content, long ts) throws IOException {
+        logger.trace("res path : {}. ", resPath);
         Path p = getRealHDFSPath(resPath);
-        logger.trace("put resource : " + p.toUri());
+        logger.trace("put resource : {}. ", p.toUri());
         FSDataOutputStream out = null;
         try {
             out = fs.create(p, true);
-            out.writeLong(ts);
-            IOUtils.copy(content, out);
-
+            content.write(out);
         } catch (Exception e) {
             throw new IOException("Put resource fail", e);
         } finally {
             IOUtils.closeQuietly(out);
+            fs.setTimes(p, ts, -1);
         }
     }
 
     @Override
-    protected long checkAndPutResourceImpl(String resPath, byte[] content, long oldTS, long newTS) throws IOException, WriteConflictException {
+    protected long checkAndPutResourceImpl(String resPath, byte[] content, long oldTS, long newTS)
+            throws IOException, WriteConflictException {
         Path p = getRealHDFSPath(resPath);
         if (!fs.exists(p)) {
             if (oldTS != 0) {
-                throw new IllegalStateException("For not exist file. OldTS have to be 0. but Actual oldTS is : " + oldTS);
+                throw new IllegalStateException(
+                        "For not exist file. OldTS have to be 0. but Actual oldTS is : " + oldTS);
             }
 
         } else {
             long realLastModify = getResourceTimestamp(resPath);
             if (realLastModify != oldTS) {
-                throw new WriteConflictException("Overwriting conflict " + resPath + ", expect old TS " + oldTS + ", but found " + realLastModify);
+                throw new WriteConflictException("Overwriting conflict " + resPath + ", expect old TS " + oldTS
+                        + ", but found " + realLastModify);
             }
         }
-        putResourceImpl(resPath, new ByteArrayInputStream(content), newTS);
+        putResourceImpl(resPath, ContentWriter.create(content), newTS);
         return newTS;
+    }
+
+    @Override
+    protected void updateTimestampImpl(String resPath, long timestamp) throws IOException {
+        try {
+            Path p = getRealHDFSPath(resPath);
+            if (fs.exists(p)) {
+                fs.setTimes(p, timestamp, -1);
+            }
+        } catch (Exception e) {
+            throw new IOException("Update resource timestamp fail", e);
+        }
     }
 
     @Override
@@ -230,6 +265,25 @@ public class HDFSResourceStore extends ResourceStore {
             Path p = getRealHDFSPath(resPath);
             if (fs.exists(p)) {
                 fs.delete(p, true);
+            }
+        } catch (Exception e) {
+            throw new IOException("Delete resource fail", e);
+        }
+    }
+
+    @Override
+    protected void deleteResourceImpl(String resPath, long timestamp) throws IOException {
+        try {
+            Path p = getRealHDFSPath(resPath);
+            if (fs.exists(p)) {
+                long origLastModified = fs.getFileStatus(p).getModificationTime();
+                if (checkTimeStampBeforeDelete(origLastModified, timestamp)) {
+                    fs.delete(p, true);
+                } else {
+                    throw new IOException("Resource " + resPath + " timestamp not match, [originLastModified: "
+                            + origLastModified + ", timestampToDelete: " + timestamp + "]");
+                }
+
             }
         } catch (Exception e) {
             throw new IOException("Delete resource fail", e);

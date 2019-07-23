@@ -32,8 +32,14 @@
         <li>
           <a data-toggle="tab" ng-if="tableModel.selectedSrcTable.source_type==1" href="#streaming">Streaming Cluster</a>
         </li>
+         <li>
+          <a data-toggle="tab" ng-if="values(tableConfig.streamingSourceType).indexOf(tableModel.selectedSrcTable.source_type) > -1" href="#streamingV2">Streaming Cluster</a>
+        </li>
         <li>
           <a data-toggle="tab"  href="#access">Access</a>
+        </li>
+        <li>
+          <a data-toggle="tab" href="#snapshot">Snapshot</a>
         </li>
       </ul>
       <div class="tab-content">
@@ -169,6 +175,40 @@
 
           <div  ng-include="'partials/cubeDesigner/streamingConfig.html'" ng-init="state.mode='view'"></div>
         </div>
+
+        <!--streamingV2-->
+        <div id="streamingV2" ng-if="values(tableConfig.streamingSourceType).indexOf(tableModel.selectedSrcTable.source_type) > -1" class="tab-pane" ng-controller="StreamConfigDisplayCtrl">
+          <div class="table-responsive">
+            <table class="table">
+              <tbody>
+                <tr>
+                  <th style="width:20%">Type</th>
+                  <td ng-if="tableModel.selectedSrcTable.source_type === tableConfig.streamingSourceType.kafka">Kafka</td>
+                  <td ng-if="tableModel.selectedSrcTable.source_type === tableConfig.streamingSourceType.kafka_hive">Kafka Hive Lambda</td>
+                </tr>
+                <tr>
+                  <th>Topic</th>
+                  <td>{{currentStreamingConfig.properties.topic}}</td>
+                </tr>
+                <tr ng-if="tableModel.selectedSrcTable.source_type === tableConfig.streamingSourceType.kafka || tableModel.selectedSrcTable.source_type === tableConfig.streamingSourceType.kafka_hive">
+                  <th>
+                    Bootstrap Servers
+                  </th>
+                  <td>{{currentStreamingConfig.properties['bootstrap.servers']}}</td>
+                </tr>
+                <tr>
+                  <th>TSParse</th>
+                  <td>{{currentStreamingConfig.parser_info.ts_parser}}</td>
+                </tr>
+                <tr>
+                  <th>TSPattern</th>
+                  <td>{{currentStreamingConfig.parser_info.ts_pattern}}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
        <!--access-->
         <div id="access" class="tab-pane">
 
@@ -184,8 +224,53 @@
               </div>
             </div>
           </div>
+        </div>
 
-
+        <!--snapshot-->
+        <div id="snapshot" class="tab-pane" ng-controller="TableSnapshotCtrl">
+          <div ng-if="tableSnapshots.length > 0">
+            <table class="table table-hover table-striped list">
+              <thead>
+                <tr style="cursor: pointer">
+                  <th ng-repeat="theaditem in tableConfig.snapshotTheaditems"
+                    ng-click="state.filterAttr= theaditem.attr;state.reverseColumn=theaditem.attr;state.filterReverse=!state.filterReverse;">
+                  {{theaditem.name}}
+                    <i ng-if="state.reverseColumn!= theaditem.attr"
+                       class="fa fa-unsorted"></i>
+                    <i ng-if="state.reverseColumn== theaditem.attr && !state.filterReverse"
+                       class="fa fa-sort-asc"></i>
+                    <i ng-if="state.reverseColumn== theaditem.attr && state.filterReverse"
+                       class="fa fa-sort-desc"></i>
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr ng-repeat="snapshot in tableSnapshots | filter: columnName | orderObjectBy:state.filterAttr:state.filterReverse">
+                  <td style="{{(snapshot.snapshotID == snapshot.snapshotID)? 'background-color:#EBF9FE':''}}">
+                    {{snapshot.snapshotID}}
+                  </td>
+                  <td style="{{(snapshot.snapshotID == snapshot.snapshotID)? 'background-color:#EBF9FE':''}}">
+                    {{snapshot.storageType}}
+                  </td>
+                  <td style="{{(snapshot.snapshotID == snapshot.snapshotID)? 'background-color:#EBF9FE':''}}">
+                    {{snapshot.lastBuildTime | utcToConfigTimeZone}}
+                  </td>
+                  <td style="{{(snapshot.snapshotID == snapshot.snapshotID)? 'background-color:#EBF9FE':''}}">
+                    {{snapshot.sourceTableLastModifyTime | utcToConfigTimeZone}}
+                  </td>
+                  <td style="{{(snapshot.snapshotID == snapshot.snapshotID)? 'background-color:#EBF9FE':''}}">
+                    {{snapshot.sourceTableSize | bytes}}
+                  </td>
+                  <td style="{{(snapshot.snapshotID == snapshot.snapshotID)? 'background-color:#EBF9FE':''}}" class="snapshot-usage">
+                    <i class="fa fa-list text-aqua" style="cursor: pointer;"  aria-hidden="true" tooltip-placement="left" tooltip-html-unsafe="<div style='text-align:left'>{{snapshot.usageInfo}}</div>"></i>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <div ng-if="tableSnapshots.length == 0">
+            <div no-result text="No Snapshot Info."></div>
+          </div>
         </div>
       </div>
 

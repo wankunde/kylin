@@ -22,6 +22,8 @@ import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.Arrays;
 import java.util.Collection;
+import java.util.HashSet;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.LinkedBlockingQueue;
@@ -29,7 +31,9 @@ import java.util.concurrent.LinkedBlockingQueue;
 import org.apache.hadoop.io.Text;
 import org.apache.kylin.common.KylinVersion;
 import org.apache.kylin.common.util.Bytes;
+import org.apache.kylin.common.util.MemoryBudgetController;
 import org.apache.kylin.common.util.StringUtil;
+import org.apache.kylin.cube.DimensionRangeInfo;
 import org.apache.kylin.cube.cuboid.CuboidUtil;
 import org.apache.kylin.engine.mr.common.BatchConstants;
 import org.apache.kylin.engine.mr.common.StatisticsDecisionUtil;
@@ -41,6 +45,7 @@ import org.apache.kylin.metadata.model.TblColRef;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import com.google.common.collect.Maps;
 import com.google.common.collect.Sets;
 import com.google.common.hash.HashFunction;
 import com.google.common.hash.Hasher;
@@ -63,13 +68,13 @@ public class FactDistinctColumnsMapper<KEYIN> extends FactDistinctColumnsMapperB
     private int rowCount = 0;
     private int samplingPercentage;
     private ByteBuffer tmpbuf;
+    
+    private DictColDeduper dictColDeduper;
+    private Map<Integer, DimensionRangeInfo> dimensionRangeInfoMap = Maps.newHashMap();
 
     private CuboidStatCalculator[] cuboidStatCalculators;
 
     private static final Text EMPTY_TEXT = new Text();
-
-    private int partitionColumnIndex = -1;
-    private boolean needFetchPartitionCol = true;
 
     private SelfDefineSortableKey sortableKey = new SelfDefineSortableKey();
 
@@ -96,18 +101,6 @@ public class FactDistinctColumnsMapper<KEYIN> extends FactDistinctColumnsMapperB
             allCuboidsHLL[i] = new HLLCounter(cubeDesc.getConfig().getCubeStatsHLLPrecision(), RegisterType.DENSE);
         }
 
-        TblColRef partitionColRef = cubeDesc.getModel().getPartitionDesc().getPartitionDateColumnRef();
-        if (partitionColRef != null) {
-            partitionColumnIndex = intermediateTableDesc.getColumnIndex(partitionColRef);
-        }
-
-        // check whether need fetch the partition col values
-        if (partitionColumnIndex < 0) {
-            // if partition col not on cube, no need
-            needFetchPartitionCol = false;
-        } else {
-            needFetchPartitionCol = true;
-        }
         //for KYLIN-2518 backward compatibility
         boolean isUsePutRowKeyToHllNewAlgorithm;
         if (KylinVersion.isBefore200(cubeDesc.getVersion())) {
@@ -148,6 +141,14 @@ public class FactDistinctColumnsMapper<KEYIN> extends FactDistinctColumnsMapperB
             cuboidStatCalculators[i] = calculator;
             calculator.start();
         }
+        
+        // setup dict col deduper
+        dictColDeduper = new DictColDeduper();
+        Set<TblColRef> dictCols = cubeDesc.getAllColumnsNeedDictionaryBuilt();
+        for (int i = 0; i < allCols.size(); i++) {
+            if (dictCols.contains(allCols.get(i)))
+                dictColDeduper.setIsDictCol(i);
+        }
     }
 
     private int getStatsThreadNum(int cuboidNum) {
@@ -172,58 +173,50 @@ public class FactDistinctColumnsMapper<KEYIN> extends FactDistinctColumnsMapperB
 
         for (String[] row : rowCollection) {
             context.getCounter(RawDataCounter.BYTES).increment(countSizeInBytes(row));
-            for (int i = 0; i < dictCols.size(); i++) {
-                String fieldValue = row[dictionaryColumnIndex[i]];
+            for (int i = 0; i < allCols.size(); i++) {
+                int colIndex = columnIndex[i];
+                int rowSize = row.length;
+                String fieldValue = " ";
+                if (colIndex <= rowSize - 1) {
+                    fieldValue = row[colIndex];
+                } else {
+                    logger.debug(
+                            "colIndex:" + colIndex + " is more than rowSize: " + rowSize + " -1, so set empty value.");
+                }
                 if (fieldValue == null)
                     continue;
 
-                int reducerIndex = reducerMapping.getReducerIdForDictCol(i, fieldValue);
-                
-                tmpbuf.clear();
-                byte[] valueBytes = Bytes.toBytes(fieldValue);
-                int size = valueBytes.length + 1;
-                if (size >= tmpbuf.capacity()) {
-                    tmpbuf = ByteBuffer.allocate(countNewSize(tmpbuf.capacity(), size));
-                }
-                tmpbuf.put(Bytes.toBytes(reducerIndex)[3]);
-                tmpbuf.put(valueBytes);
-                outputKey.set(tmpbuf.array(), 0, tmpbuf.position());
-                DataType type = dictCols.get(i).getType();
-                sortableKey.init(outputKey, type);
-                //judge type
-                context.write(sortableKey, EMPTY_TEXT);
+                final DataType type = allCols.get(i).getType();
 
-                // log a few rows for troubleshooting
-                if (rowCount < 10) {
-                    logger.info(
-                            "Sample output: " + dictCols.get(i) + " '" + fieldValue + "' => reducer " + reducerIndex);
+                //for dic column, de dup before write value; for dim not dic column, hold util doCleanup()
+                if (dictColDeduper.isDictCol(i)) {
+                    if (dictColDeduper.add(i, fieldValue)) {
+                        writeFieldValue(context, type, i, fieldValue);
+                    }
+                } else {
+                    DimensionRangeInfo old = dimensionRangeInfoMap.get(i);
+                    if (old == null) {
+                        old = new DimensionRangeInfo(fieldValue, fieldValue);
+                        dimensionRangeInfoMap.put(i, old);
+                    } else {
+                        old.setMax(type.getOrder().max(old.getMax(), fieldValue));
+                        old.setMin(type.getOrder().min(old.getMin(), fieldValue));
+                    }
                 }
             }
 
             if (rowCount % 100 < samplingPercentage) {
                 putRowKeyToHLL(row);
             }
-
-            if (needFetchPartitionCol == true) {
-                String fieldValue = row[partitionColumnIndex];
-                if (fieldValue != null) {
-                    tmpbuf.clear();
-                    byte[] valueBytes = Bytes.toBytes(fieldValue);
-                    int size = valueBytes.length + 1;
-                    if (size >= tmpbuf.capacity()) {
-                        tmpbuf = ByteBuffer.allocate(countNewSize(tmpbuf.capacity(), size));
-                    }
-                    tmpbuf.put((byte) FactDistinctColumnsReducerMapping.MARK_FOR_PARTITION_COL);
-                    tmpbuf.put(valueBytes);
-                    outputKey.set(tmpbuf.array(), 0, tmpbuf.position());
-                    sortableKey.init(outputKey, (byte) 0);
-                    context.write(sortableKey, EMPTY_TEXT);
-                }
+            
+            if (rowCount % 100 == 0) {
+                dictColDeduper.resetIfShortOfMem();
             }
+
             rowCount++;
         }
     }
-
+    
     private void putRowKeyToHLL(String[] row) {
         for (CuboidStatCalculator cuboidStatCalculator : cuboidStatCalculators) {
             cuboidStatCalculator.putRow(row);
@@ -264,6 +257,12 @@ public class FactDistinctColumnsMapper<KEYIN> extends FactDistinctColumnsMapperB
                 context.write(sortableKey, outputValue);
             }
         }
+        for (Integer colIndex : dimensionRangeInfoMap.keySet()) {
+            DimensionRangeInfo rangeInfo = dimensionRangeInfoMap.get(colIndex);
+            DataType dataType = allCols.get(colIndex).getType();
+            writeFieldValue(context, dataType, colIndex, rangeInfo.getMin());
+            writeFieldValue(context, dataType, colIndex, rangeInfo.getMax());
+        }
     }
 
     private int countNewSize(int oldSize, int dataSize) {
@@ -272,6 +271,26 @@ public class FactDistinctColumnsMapper<KEYIN> extends FactDistinctColumnsMapperB
             newSize = newSize * 2;
         }
         return newSize;
+    }
+
+    private void writeFieldValue(Context context, DataType type, Integer colIndex, String value)
+            throws IOException, InterruptedException {
+        int reducerIndex = reducerMapping.getReducerIdForCol(colIndex, value);
+        tmpbuf.clear();
+        byte[] valueBytes = Bytes.toBytes(value);
+        int size = valueBytes.length + 1;
+        if (size >= tmpbuf.capacity()) {
+            tmpbuf = ByteBuffer.allocate(countNewSize(tmpbuf.capacity(), size));
+        }
+        tmpbuf.put(Bytes.toBytes(reducerIndex)[3]);
+        tmpbuf.put(valueBytes);
+        outputKey.set(tmpbuf.array(), 0, tmpbuf.position());
+        sortableKey.init(outputKey, type);
+        context.write(sortableKey, EMPTY_TEXT);
+        // log a few rows for troubleshooting
+        if (rowCount < 10) {
+            logger.info("Sample output: " + allCols.get(colIndex) + " '" + value + "' => reducer " + reducerIndex);
+        }
     }
 
     public static class CuboidStatCalculator implements Runnable {
@@ -403,5 +422,46 @@ public class FactDistinctColumnsMapper<KEYIN> extends FactDistinctColumnsMapperB
                 }
             }
         }
+    }
+    
+    public static class DictColDeduper {
+
+        final boolean enabled;
+        final int resetThresholdMB;
+        final Map<Integer, Set<String>> colValueSets = Maps.newHashMap();
+        
+        public DictColDeduper() {
+            this(200, 100);
+        }
+        
+        public DictColDeduper(int enableThresholdMB, int resetThresholdMB) {
+            // only enable when there is sufficient memory
+            this.enabled = MemoryBudgetController.getSystemAvailMB() >= enableThresholdMB;
+            this.resetThresholdMB = resetThresholdMB;
+        }
+        
+        public void setIsDictCol(int i) {
+            colValueSets.put(i, new HashSet<String>());
+        }
+        
+        public boolean isDictCol(int i) {
+            return colValueSets.containsKey(i);
+        }
+
+        public boolean add(int i, String fieldValue) {
+            return colValueSets.get(i).add(fieldValue);
+        }
+        
+        public Set<String> getValueSet(int i) {
+            return colValueSets.get(i);
+        }
+
+        public void resetIfShortOfMem() {
+            if (MemoryBudgetController.getSystemAvailMB() < resetThresholdMB) {
+                for (Set<String> set : colValueSets.values())
+                    set.clear();
+            }
+        }
+        
     }
 }

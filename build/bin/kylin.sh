@@ -27,17 +27,28 @@ if [ "$verbose" = true ]; then
     shift
 fi
 
-source ${dir}/check-env.sh
 mkdir -p ${KYLIN_HOME}/logs
 mkdir -p ${KYLIN_HOME}/ext
 
+source ${dir}/set-java-home.sh
+
 function retrieveDependency() {
     #retrive $hive_dependency and $hbase_dependency
-    source ${dir}/find-hive-dependency.sh
-    source ${dir}/find-hbase-dependency.sh
-    source ${dir}/find-hadoop-conf-dir.sh
-    source ${dir}/find-kafka-dependency.sh
-    source ${dir}/find-spark-dependency.sh
+    if [[ -z $reload_dependency && `ls -1 ${dir}/cached-* 2>/dev/null | wc -l` -eq 5 ]]
+    then
+        echo "Using cached dependency..."
+        source ${dir}/cached-hive-dependency.sh
+        source ${dir}/cached-hbase-dependency.sh
+        source ${dir}/cached-hadoop-conf-dir.sh
+        source ${dir}/cached-kafka-dependency.sh
+        source ${dir}/cached-spark-dependency.sh
+    else
+        source ${dir}/find-hive-dependency.sh
+        source ${dir}/find-hbase-dependency.sh
+        source ${dir}/find-hadoop-conf-dir.sh
+        source ${dir}/find-kafka-dependency.sh
+        source ${dir}/find-spark-dependency.sh
+    fi
 
     #retrive $KYLIN_EXTRA_START_OPTS
     if [ -f "${dir}/setenv.sh" ]; then
@@ -55,9 +66,7 @@ function retrieveDependency() {
     verbose "HBASE_CLASSPATH: ${HBASE_CLASSPATH}"
 }
 
-# start command
-if [ "$1" == "start" ]
-then
+function retrieveStartCommand() {
     if [ -f "${KYLIN_HOME}/pid" ]
     then
         PID=`cat $KYLIN_HOME/pid`
@@ -66,7 +75,9 @@ then
           quit "Kylin is running, stop it first"
         fi
     fi
-    
+
+    source ${dir}/check-env.sh
+
     tomcat_root=${dir}/../tomcat
     export tomcat_root
 
@@ -105,7 +116,8 @@ then
     verbose "kylin classpath is: $(hbase classpath)"
 
     # KYLIN_EXTRA_START_OPTS is for customized settings, checkout bin/setenv.sh
-    hbase ${KYLIN_EXTRA_START_OPTS} \
+    start_command="hbase ${KYLIN_EXTRA_START_OPTS} \
+    -Djava.util.logging.config.file=${tomcat_root}/conf/logging.properties \
     -Djava.util.logging.manager=org.apache.juli.ClassLoaderLogManager \
     -Dlog4j.configuration=file:${KYLIN_HOME}/conf/kylin-server-log4j.properties \
     -Dorg.apache.tomcat.util.buf.UDecoder.ALLOW_ENCODED_SLASH=true \
@@ -119,16 +131,33 @@ then
     -Dkylin.kafka.dependency=${kafka_dependency} \
     -Dkylin.spark.dependency=${spark_dependency} \
     -Dkylin.hadoop.conf.dir=${kylin_hadoop_conf_dir} \
+    -Dkylin.server.host-address=${kylin_rest_address} \
     -Dspring.profiles.active=${spring_profile} \
-    org.apache.hadoop.util.RunJar ${tomcat_root}/bin/bootstrap.jar  org.apache.catalina.startup.Bootstrap start >> ${KYLIN_HOME}/logs/kylin.out 2>&1 & echo $! > ${KYLIN_HOME}/pid &
-    
+    org.apache.hadoop.util.RunJar ${tomcat_root}/bin/bootstrap.jar  org.apache.catalina.startup.Bootstrap start"
+}
+
+if [ "$2" == "--reload-dependency" ]
+then
+    reload_dependency=1
+fi
+
+# start command
+if [ "$1" == "start" ]
+then
+    retrieveStartCommand
+    ${start_command} >> ${KYLIN_HOME}/logs/kylin.out 2>&1 & echo $! > ${KYLIN_HOME}/pid &
+
     echo ""
     echo "A new Kylin instance is started by $USER. To stop it, run 'kylin.sh stop'"
     echo "Check the log at ${KYLIN_HOME}/logs/kylin.log"
-    kylin_server_port=`sed -n "s/<Connector port=\"\(.*\)\" protocol=\"HTTP\/1.1\"/\1/"p ${KYLIN_HOME}/tomcat/conf/server.xml`
-    kylin_server_port=`echo ${kylin_server_port}` #ignore white space
-    echo "Web UI is at http://<hostname>:${kylin_server_port}/kylin"
+    echo "Web UI is at http://${kylin_rest_address_arr}/kylin"
     exit 0
+    
+# run command
+elif [ "$1" == "run" ]
+then
+    retrieveStartCommand
+    ${start_command}
 
 # stop command
 elif [ "$1" == "stop" ]
@@ -177,6 +206,115 @@ then
     else
         quit "Kylin is not running"
     fi
+
+# streaming command
+elif [ "$1" == "streaming" ]
+then
+    if [ $# -lt 2 ]
+    then
+        echo "invalid input args $@"
+        exit -1
+    fi
+    if [ "$2" == "start" ]
+    then
+        if [ -f "${KYLIN_HOME}/streaming_receiver_pid" ]
+        then
+            PID=`cat $KYLIN_HOME/streaming_receiver_pid`
+            if ps -p $PID > /dev/null
+            then
+              echo "Kylin is running, stop it first"
+            exit 1
+            fi
+        fi
+        #retrive $hbase_dependency
+        source ${dir}/find-hbase-dependency.sh
+        #retrive $KYLIN_EXTRA_START_OPTS
+        if [ -f "${KYLIN_HOME}/conf/setenv.sh" ]
+            then source ${KYLIN_HOME}/conf/setenv.sh
+        fi
+
+        mkdir -p ${KYLIN_HOME}/ext
+        HBASE_CLASSPATH=`hbase classpath`
+        #echo "hbase class path:"$HBASE_CLASSPATH
+        STREAM_CLASSPATH=${KYLIN_HOME}/lib/streaming/*:${KYLIN_HOME}/ext/*:${HBASE_CLASSPATH}
+
+        # KYLIN_EXTRA_START_OPTS is for customized settings, checkout bin/setenv.sh
+        ${JAVA_HOME}/bin/java -cp $STREAM_CLASSPATH ${KYLIN_EXTRA_START_OPTS} \
+        -Dlog4j.configuration=stream-receiver-log4j.properties\
+        -DKYLIN_HOME=${KYLIN_HOME}\
+        -Dkylin.hbase.dependency=${hbase_dependency} \
+        org.apache.kylin.stream.server.StreamingReceiver $@ > ${KYLIN_HOME}/logs/streaming_receiver.out 2>&1 & echo $! > ${KYLIN_HOME}/streaming_receiver_pid &
+        exit 0
+    elif [ "$2" == "stop" ]
+    then
+        if [ ! -f "${KYLIN_HOME}/streaming_receiver_pid" ]
+        then
+            echo "streaming is not running, please check"
+            exit 1
+        fi
+        PID=`cat ${KYLIN_HOME}/streaming_receiver_pid`
+        if [ "$PID" = "" ]
+        then
+            echo "streaming is not running, please check"
+            exit 1
+        else
+            echo "stopping streaming:$PID"
+            WAIT_TIME=2
+            LOOP_COUNTER=20
+            if ps -p $PID > /dev/null
+            then
+                echo "Stopping Kylin: $PID"
+                kill $PID
+
+                for ((i=0; i<$LOOP_COUNTER; i++))
+                do
+                    # wait to process stopped
+                    sleep $WAIT_TIME
+                    if ps -p $PID > /dev/null ; then
+                        echo "Stopping in progress. Will check after $WAIT_TIME secs again..."
+                        continue;
+                    else
+                        break;
+                    fi
+                done
+
+                # if process is still around, use kill -9
+                if ps -p $PID > /dev/null
+                then
+                    echo "Initial kill failed, getting serious now..."
+                    kill -9 $PID
+                    sleep 1 #give kill -9  sometime to "kill"
+                    if ps -p $PID > /dev/null
+                    then
+                       quit "Warning, even kill -9 failed, giving up! Sorry..."
+                    fi
+                fi
+
+                # process is killed , remove pid file
+                rm -rf ${KYLIN_HOME}/streaming_receiver_pid
+                echo "Kylin with pid ${PID} has been stopped."
+                exit 0
+            else
+               quit "Kylin with pid ${PID} is not running"
+            fi
+        fi
+    elif [[ "$2" = org.apache.kylin.* ]]
+    then
+        source ${KYLIN_HOME}/conf/setenv.sh
+        HBASE_CLASSPATH=`hbase classpath`
+        #echo "hbase class path:"$HBASE_CLASSPATH
+        STREAM_CLASSPATH=${KYLIN_HOME}/lib/streaming/*:${KYLIN_HOME}/ext/*:${HBASE_CLASSPATH}
+
+        shift
+        # KYLIN_EXTRA_START_OPTS is for customized settings, checkout bin/setenv.sh
+        ${JAVA_HOME}/bin/java -cp $STREAM_CLASSPATH ${KYLIN_EXTRA_START_OPTS} \
+        -Dlog4j.configuration=stream-receiver-log4j.properties\
+        -DKYLIN_HOME=${KYLIN_HOME}\
+        -Dkylin.hbase.dependency=${hbase_dependency} \
+        "$@"
+        exit 0
+    fi
+
 elif [ "$1" = "version" ]
 then
     retrieveDependency

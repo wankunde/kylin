@@ -80,6 +80,7 @@ KylinApp.constant('cubeConfig', {
   theaditems: [
     {attr: 'name', name: 'Name'},
     {attr: 'status', name: 'Status'},
+    {attr: 'project', name: 'Project'},
     {attr: 'size_kb', name: 'Cube Size'},
     {attr: 'input_records_count', name: 'Source Records'},
     {attr: 'last_build_time', name: 'Last Build Time'},
@@ -96,14 +97,22 @@ KylinApp.constant('cubeConfig', {
     {name:"minute_start",type:"timestamp"}
   ],
   partitionDateFormatOpt:[
+    'yyyy-MM-dd HH:mm:ss',
+    'yyyy-MM-dd HH:mm',
+    'yyyy-MM-dd HH',
     'yyyy-MM-dd',
+    'yyyyMMddHHMMSS',
+    'yyyyMMddHHMM',
+    'yyyyMMddHH',
     'yyyyMMdd',
-    'yyyy-MM-dd HH:mm:ss'
+    // 'timestamp',
+    // 'other'
   ],
   partitionTimeFormatOpt:[
     'HH:mm:ss',
     'HH:mm',
-    'HH'
+    'HH',
+    // 'other'
   ],
   rowKeyShardOptions:[
     true,false
@@ -114,6 +123,10 @@ KylinApp.constant('cubeConfig', {
     {name:"Segment Dictionary", value:"org.apache.kylin.dict.global.SegmentAppendTrieDictBuilder"}
   ],
   needSetLengthEncodingList:['fixed_length','fixed_length_hex','int','integer'],
+  snapshotStorageTypes: [
+    {name: 'Meta Store', value: 'metaStore'},
+    {name: 'HBase', value: 'hbase'}
+  ],
   baseChartOptions: {
     chart: {
       type: 'sunburstChart',

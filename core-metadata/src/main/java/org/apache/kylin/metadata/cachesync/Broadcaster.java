@@ -91,14 +91,17 @@ public class Broadcaster {
         this.config = config;
         this.syncErrorHandler = getSyncErrorHandler(config);
         this.announceMainLoop = Executors.newSingleThreadExecutor(new DaemonThreadFactory());
-        this.announceThreadPool = new ThreadPoolExecutor(1, 10, 60L, TimeUnit.SECONDS,
-                new LinkedBlockingQueue<Runnable>(), new DaemonThreadFactory());
-
+        
         final String[] nodes = config.getRestServers();
         if (nodes == null || nodes.length < 1) {
             logger.warn("There is no available rest server; check the 'kylin.server.cluster-servers' config");
         }
-        logger.debug(nodes.length + " nodes in the cluster: " + Arrays.toString(nodes));
+        logger.debug("{} nodes in the cluster: {}", (nodes == null ? 0 : nodes.length), Arrays.toString(nodes));
+        
+        int corePoolSize = (nodes == null || nodes.length < 1)? 1 : nodes.length;
+        int maximumPoolSize = (nodes == null || nodes.length < 1)? 10 : nodes.length * 2;
+        this.announceThreadPool = new ThreadPoolExecutor(corePoolSize, maximumPoolSize, 60L, TimeUnit.SECONDS,
+            new LinkedBlockingQueue<Runnable>(), new DaemonThreadFactory());
 
         announceMainLoop.execute(new Runnable() {
             @Override
@@ -110,7 +113,7 @@ public class Broadcaster {
                         final BroadcastEvent broadcastEvent = broadcastEvents.takeFirst();
 
                         String[] restServers = config.getRestServers();
-                        logger.debug("Servers in the cluster: " + Arrays.toString(restServers));
+                        logger.debug("Servers in the cluster: {}", Arrays.toString(restServers));
                         for (final String node : restServers) {
                             if (restClientMap.containsKey(node) == false) {
                                 restClientMap.put(node, new RestClient(node));
@@ -120,7 +123,7 @@ public class Broadcaster {
                         String toWhere = broadcastEvent.getTargetNode();
                         if (toWhere == null)
                             toWhere = "all";
-                        logger.debug("Announcing new broadcast to " + toWhere + ": " + broadcastEvent);
+                        logger.debug("Announcing new broadcast to {}: {}", toWhere, broadcastEvent);
                         
                         for (final String node : restServers) {
                             if (!(toWhere.equals("all") || toWhere.equals(node)))
@@ -196,11 +199,7 @@ public class Broadcaster {
     }
 
     private static void addListener(Map<String, List<Listener>> lmap, String entity, Listener listener) {
-        List<Listener> list = lmap.get(entity);
-        if (list == null) {
-            list = new ArrayList<>();
-            lmap.put(entity, list);
-        }
+        List<Listener> list = lmap.computeIfAbsent(entity, s -> new ArrayList<>());
         list.add(listener);
     }
 
@@ -244,7 +243,7 @@ public class Broadcaster {
         if (list.isEmpty())
             return;
 
-        logger.debug("Broadcasting " + event + ", " + entity + ", " + cacheKey);
+        logger.debug("Broadcasting {}, {}, {}", event, entity, cacheKey);
 
         switch (entity) {
         case SYNC_ALL:
@@ -254,19 +253,19 @@ public class Broadcaster {
             config.clearManagers(); // clear all registered managers in config
             break;
         case SYNC_PRJ_SCHEMA:
-            ProjectManager.getInstance(config).clearL2Cache();
+            ProjectManager.getInstance(config).clearL2Cache(cacheKey);
             for (Listener l : list) {
                 l.onProjectSchemaChange(this, cacheKey);
             }
             break;
         case SYNC_PRJ_DATA:
-            ProjectManager.getInstance(config).clearL2Cache(); // cube's first becoming ready leads to schema change too
+            ProjectManager.getInstance(config).clearL2Cache(cacheKey); // cube's first becoming ready leads to schema change too
             for (Listener l : list) {
                 l.onProjectDataChange(this, cacheKey);
             }
             break;
         case SYNC_PRJ_ACL:
-            ProjectManager.getInstance(config).clearL2Cache();
+            ProjectManager.getInstance(config).clearL2Cache(cacheKey);
             for (Listener l : list) {
                 l.onProjectQueryACLChange(this, cacheKey);
             }
@@ -278,7 +277,7 @@ public class Broadcaster {
             break;
         }
 
-        logger.debug("Done broadcasting " + event + ", " + entity + ", " + cacheKey);
+        logger.debug("Done broadcasting {}, {}, {}", event, entity, cacheKey);
     }
 
     /**
@@ -363,7 +362,7 @@ public class Broadcaster {
         }
     }
 
-    abstract public static class Listener {
+    public abstract static class Listener {
         public void onClearAll(Broadcaster broadcaster) throws IOException {
         }
 
@@ -452,10 +451,7 @@ public class Broadcaster {
             if (!StringUtils.equals(cacheKey, other.cacheKey)) {
                 return false;
             }
-            if (!StringUtils.equals(entity, other.entity)) {
-                return false;
-            }
-            return true;
+            return StringUtils.equals(entity, other.entity);
         }
 
         @Override

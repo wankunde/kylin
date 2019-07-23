@@ -22,18 +22,26 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 import java.io.IOException;
-import java.util.UUID;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.kylin.common.KylinConfig;
 import org.apache.kylin.common.KylinConfig.SetAndUnsetThreadLocalConfig;
+import org.apache.kylin.common.util.LocalFileMetadataTestCase;
+import org.apache.kylin.common.util.RandomUtil;
+import org.apache.kylin.common.util.StringUtil;
 import org.apache.kylin.job.execution.DefaultChainedExecutable;
 import org.junit.Assert;
+import org.junit.Before;
 import org.junit.Test;
 
-public class HiveMRInputTest {
+public class HiveMRInputTest extends LocalFileMetadataTestCase {
+
+    @Before
+    public void setup() throws Exception {
+        createTestMetadata();
+    }
 
     @Test
     public void TestGetJobWorkingDir() throws IOException {
@@ -44,10 +52,10 @@ public class HiveMRInputTest {
             when(kylinConfig.getHiveTableDirCreateFirst()).thenReturn(true);
             when(kylinConfig.getHdfsWorkingDirectory()).thenReturn("/tmp/kylin/");
             DefaultChainedExecutable defaultChainedExecutable = mock(DefaultChainedExecutable.class);
-            defaultChainedExecutable.setId(UUID.randomUUID().toString());
+            defaultChainedExecutable.setId(RandomUtil.randomUUID().toString());
 
-            HiveMRInput.BatchCubingInputSide batchCubingInputSide = new HiveMRInput.BatchCubingInputSide(null);
-            String jobWorkingDir = batchCubingInputSide.getJobWorkingDir(defaultChainedExecutable);
+            String jobWorkingDir = HiveInputBase.getJobWorkingDir(defaultChainedExecutable,
+                    KylinConfig.getInstanceFromEnv().getHdfsWorkingDirectory());
             jobWorkDirPath = new Path(jobWorkingDir);
             Assert.assertTrue(fileSystem.exists(jobWorkDirPath));
         } finally {
@@ -60,19 +68,28 @@ public class HiveMRInputTest {
     public void testMaterializeViewHql() {
         final int viewSize = 2;
         String[] mockedViewNames = { "mockedView1", "mockedView2" };
-        String[] mockedTalbeNames = { "mockedTable1", "mockedTable2" };
+        String[] mockedTalbeNames = { "`mockedTable1`", "`mockedTable2`" };
         String mockedWorkingDir = "mockedWorkingDir";
 
         StringBuilder hqls = new StringBuilder();
         for (int i = 0; i < viewSize; i++) {
-            String hql = HiveMRInput.BatchCubingInputSide.materializeViewHql(mockedViewNames[i], mockedTalbeNames[i],
-                    mockedWorkingDir);
+            String hql = HiveInputBase.materializeViewHql(mockedViewNames[i], mockedTalbeNames[i], mockedWorkingDir);
             hqls.append(hql);
         }
 
-        for (String sub : hqls.toString().split("\n")) {
+        for (String sub : StringUtil.splitAndTrim(hqls.toString(), "\n")) {
             Assert.assertTrue(sub.endsWith(";"));
         }
+
+        Assert.assertEquals("DROP TABLE IF EXISTS `mockedView1`;\n"
+                + "CREATE TABLE IF NOT EXISTS `mockedView1` LIKE `mockedTable1` LOCATION 'mockedWorkingDir/mockedView1';\n"
+                + "ALTER TABLE `mockedView1` SET TBLPROPERTIES('auto.purge'='true');\n"
+                + "INSERT OVERWRITE TABLE `mockedView1` SELECT * FROM `mockedTable1`;\n"
+                + "DROP TABLE IF EXISTS `mockedView2`;\n"
+                + "CREATE TABLE IF NOT EXISTS `mockedView2` LIKE `mockedTable2` LOCATION 'mockedWorkingDir/mockedView2';\n"
+                + "ALTER TABLE `mockedView2` SET TBLPROPERTIES('auto.purge'='true');\n"
+                + "INSERT OVERWRITE TABLE `mockedView2` SELECT * FROM `mockedTable2`;\n",
+                hqls.toString());
     }
 
 }

@@ -18,7 +18,7 @@
 
 'use strict';
 
-KylinApp.controller('CubeSchemaCtrl', function ($scope, QueryService, UserService,modelsManager, ProjectService, AuthenticationService,$filter,ModelService,MetaModel,CubeDescModel,CubeList,TableModel,ProjectModel,ModelDescService,SweetAlert,cubesManager,StreamingService,CubeService,VdmUtil) {
+KylinApp.controller('CubeSchemaCtrl', function ($scope, QueryService, UserService,modelsManager, ProjectService, AuthenticationService,$filter,ModelService,MetaModel,CubeDescModel,CubeList,TableModel,ProjectModel,ModelDescService,SweetAlert,cubesManager,StreamingService,CubeService,VdmUtil,tableConfig) {
     $scope.modelsManager = modelsManager;
     $scope.cubesManager = cubesManager;
     $scope.projects = [];
@@ -307,6 +307,14 @@ KylinApp.controller('CubeSchemaCtrl', function ($scope, QueryService, UserServic
       SweetAlert.swal('Oops...', "The cube named [" + $scope.cubeMetaFrame.name.toUpperCase() + "] already exists", 'warning');
       return false;
     }
+    // Update storage type according to the streaming table in model
+    if(TableModel.selectProjectTables.some(function(table) {
+        return (table.name === $scope.metaModel.model.fact_table && _.values(tableConfig.streamingSourceType).indexOf(table.source_type) > -1)
+    })) {
+        $scope.cubeMetaFrame.storage_type = 3;
+    } else {
+        $scope.cubeMetaFrame.storage_type = 2;
+    }
     return true;
   }
 
@@ -373,6 +381,9 @@ KylinApp.controller('CubeSchemaCtrl', function ($scope, QueryService, UserServic
           }
           if(rowkey.encoding.substr(0,3)=='int' && (rowkey.encoding.substr(4)<1 || rowkey.encoding.substr(4)>8)){
             errors.push("int encoding column length should between 1 and 8.");
+          }
+          if(rowkey.encoding.substr(0, 5) == 'fixed' && (!/^[1-9]\d*$/.test(rowkey.encoding.split(':')[1]))) {
+            errors.push("fixed encoding need a valid length.")
           }
         })
         if(shardRowkeyList.length >1){

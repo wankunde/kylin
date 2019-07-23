@@ -21,11 +21,12 @@ package org.apache.kylin.rest.controller;
 import java.io.IOException;
 import java.util.Iterator;
 import java.util.List;
-import java.util.UUID;
+import java.util.Locale;
 
 import org.apache.commons.lang.StringUtils;
 import org.apache.kylin.common.KylinConfig;
 import org.apache.kylin.common.util.JsonUtil;
+import org.apache.kylin.common.util.RandomUtil;
 import org.apache.kylin.metadata.model.DataModelDesc;
 import org.apache.kylin.metadata.model.DataModelManager;
 import org.apache.kylin.metadata.project.ProjectInstance;
@@ -90,7 +91,7 @@ public class ModelController extends BasicController {
             return modelService.getModels(modelName, projectName, limit, offset);
         } catch (IOException e) {
             logger.error("Failed to deal with the request:" + e.getLocalizedMessage(), e);
-            throw new InternalErrorException("Failed to deal with the request: " + e.getLocalizedMessage());
+            throw new InternalErrorException("Failed to deal with the request: " + e.getLocalizedMessage(), e);
         }
     }
 
@@ -114,12 +115,13 @@ public class ModelController extends BasicController {
         }
         if (!ValidateUtil.isAlphanumericUnderscore(modelDesc.getName())) {
             throw new BadRequestException(
-                    String.format("Invalid model name %s, only letters, numbers and underscore " + "supported."),
-                    modelDesc.getName());
+                    String.format(Locale.ROOT,
+                            "Invalid model name %s, only letters, numbers and underscore supported.",
+                    modelDesc.getName()));
         }
 
         try {
-            modelDesc.setUuid(UUID.randomUUID().toString());
+            modelDesc.setUuid(RandomUtil.randomUUID().toString());
             String projectName = (null == modelRequest.getProject()) ? ProjectInstance.DEFAULT_PROJECT_NAME
                     : modelRequest.getProject();
 
@@ -127,7 +129,7 @@ public class ModelController extends BasicController {
         } catch (IOException e) {
             // TODO Auto-generated catch block
             logger.error("Failed to deal with the request:" + e.getLocalizedMessage(), e);
-            throw new InternalErrorException("Failed to deal with the request: " + e.getLocalizedMessage());
+            throw new InternalErrorException("Failed to deal with the request: " + e.getLocalizedMessage(), e);
         }
 
         modelRequest.setUuid(modelDesc.getUuid());
@@ -148,7 +150,7 @@ public class ModelController extends BasicController {
             throw new ForbiddenException("You don't have right to update this model.");
         } catch (Exception e) {
             logger.error("Failed to deal with the request:" + e.getLocalizedMessage(), e);
-            throw new InternalErrorException("Failed to deal with the request: " + e.getLocalizedMessage());
+            throw new InternalErrorException("Failed to deal with the request: " + e.getLocalizedMessage(), e);
         }
 
         if (modelDesc.getError().isEmpty()) {
@@ -190,7 +192,7 @@ public class ModelController extends BasicController {
         }
 
         if (modelDesc == null || StringUtils.isEmpty(modelName)) {
-            throw new BadRequestException("Model does not exist.");
+            throw new NotFoundException("Model does not exist.");
         }
 
         if (!project.equals(modelDesc.getProject())) {
@@ -201,8 +203,8 @@ public class ModelController extends BasicController {
             throw new BadRequestException("New model name should not be empty.");
         }
         if (!ValidateUtil.isAlphanumericUnderscore(newModelName)) {
-            throw new BadRequestException(String
-                    .format("Invalid model name %s, only letters, numbers and underscore supported.", newModelName));
+            throw new BadRequestException(String.format(Locale.ROOT,
+                    "Invalid model name %s, only letters, numbers and underscore supported.", newModelName));
         }
 
         DataModelDesc newModelDesc = DataModelDesc.getCopyOf(modelDesc);

@@ -23,10 +23,13 @@ import java.nio.ByteBuffer;
 import java.text.DateFormat;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Calendar;
 import java.util.Date;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
+import java.util.TimeZone;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -34,7 +37,9 @@ import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 
+import org.apache.commons.lang.StringUtils;
 import org.apache.commons.lang3.time.FastDateFormat;
+import org.junit.Assert;
 import org.junit.Ignore;
 import org.junit.Test;
 import org.slf4j.LoggerFactory;
@@ -51,19 +56,6 @@ import com.google.common.collect.Maps;
 @SuppressWarnings("unused")
 public class BasicTest {
     protected static final org.slf4j.Logger logger = LoggerFactory.getLogger(BasicTest.class);
-
-    private void log(ByteBuffer a) {
-        Integer x = 4;
-        foo(x);
-    }
-
-    private void foo(Long a) {
-        System.out.printf("a");
-    }
-
-    private void foo(Integer b) {
-        System.out.printf("b");
-    }
 
     private enum MetricType {
         Count, DimensionAsMetric, DistinctCount, Normal
@@ -182,9 +174,9 @@ public class BasicTest {
         long current = System.currentTimeMillis();
         System.out.println(time(current));
 
-        Calendar a = Calendar.getInstance();
-        Calendar b = Calendar.getInstance();
-        Calendar c = Calendar.getInstance();
+        Calendar a = Calendar.getInstance(TimeZone.getDefault(), Locale.ROOT);
+        Calendar b = Calendar.getInstance(TimeZone.getDefault(), Locale.ROOT);
+        Calendar c = Calendar.getInstance(TimeZone.getDefault(), Locale.ROOT);
         b.clear();
         c.clear();
 
@@ -223,9 +215,26 @@ public class BasicTest {
         System.out.println(formatter.parse(timeStr).getTime());
     }
 
+    @Test
+    public void testStringSplit() throws Exception {
+
+        String[] origin = new String[] {"ab,c", "cd|e"};
+
+        // test with sequence file default delimiter
+        String delimiter = "\01"; //"\u001F"; "\t";
+        String concated = StringUtils.join(Arrays.asList(origin), delimiter);
+        System.out.println(concated);
+
+        String[] newValues = concated.split(delimiter);
+        Assert.assertEquals(origin, newValues);
+
+        newValues = concated.split("\\" + delimiter);
+        Assert.assertEquals(origin, newValues);
+    }
+
     private static String time(long t) {
-        DateFormat dateFormat = new SimpleDateFormat("yyyy/MM/dd HH:mm:ss");
-        Calendar cal = Calendar.getInstance();
+        DateFormat dateFormat = new SimpleDateFormat("yyyy/MM/dd HH:mm:ss", Locale.ROOT);
+        Calendar cal = Calendar.getInstance(TimeZone.getDefault(), Locale.ROOT);
         cal.setTimeInMillis(t);
         return dateFormat.format(cal.getTime());
     }

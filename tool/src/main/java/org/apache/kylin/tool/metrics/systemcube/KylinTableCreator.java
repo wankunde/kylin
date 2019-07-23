@@ -21,10 +21,10 @@ package org.apache.kylin.tool.metrics.systemcube;
 import java.io.ByteArrayOutputStream;
 import java.io.DataOutputStream;
 import java.util.List;
-import java.util.UUID;
 
 import org.apache.kylin.common.KylinConfig;
 import org.apache.kylin.common.util.Pair;
+import org.apache.kylin.common.util.RandomUtil;
 import org.apache.kylin.metadata.TableMetadataManager;
 import org.apache.kylin.metadata.model.ColumnDesc;
 import org.apache.kylin.metadata.model.TableDesc;
@@ -47,7 +47,7 @@ public class KylinTableCreator {
         TableMetadataManager.TABLE_SERIALIZER.serialize(kylinTable, dout);
         dout.close();
         buf.close();
-        System.out.println(buf.toString());
+        System.out.println(buf.toString("UTF-8"));
     }
 
     public static TableDesc generateKylinTableForMetricsQuery(KylinConfig kylinConfig, SinkTool sinkTool) {
@@ -91,7 +91,7 @@ public class KylinTableCreator {
 
         Pair<String, String> tableNameSplits = ActiveReservoirReporter
                 .getTableNameSplits(sinkTool.getTableNameForMetrics(subject));
-        kylinTable.setUuid(UUID.randomUUID().toString());
+        kylinTable.setUuid(RandomUtil.randomUUID().toString());
         kylinTable.setDatabase(tableNameSplits.getFirst());
         kylinTable.setName(tableNameSplits.getSecond());
         kylinTable.setTableType(null);

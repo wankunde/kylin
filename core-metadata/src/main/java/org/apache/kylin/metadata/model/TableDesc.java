@@ -21,6 +21,7 @@ package org.apache.kylin.metadata.model;
 import java.util.Arrays;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Locale;
 
 import org.apache.kylin.common.KylinConfig;
 import org.apache.kylin.common.persistence.ResourceStore;
@@ -28,6 +29,8 @@ import org.apache.kylin.common.persistence.RootPersistentEntity;
 import org.apache.kylin.common.util.Pair;
 import org.apache.kylin.common.util.StringSplitter;
 import org.apache.kylin.metadata.MetadataConstants;
+import org.apache.kylin.metadata.project.ProjectInstance;
+import org.apache.kylin.metadata.project.ProjectManager;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -51,7 +54,7 @@ public class TableDesc extends RootPersistentEntity implements ISourceAware {
     public static String concatRawResourcePath(String nameOnPath) {
         return ResourceStore.TABLE_RESOURCE_ROOT + "/" + nameOnPath + ".json";
     }
-    
+
     public static String makeResourceName(String tableIdentity, String prj) {
         return prj == null ? tableIdentity : tableIdentity + "--" + prj;
     }
@@ -71,7 +74,8 @@ public class TableDesc extends RootPersistentEntity implements ISourceAware {
         if (cut >= 0)
             path = path.substring(cut + 1);
 
-        String table, prj;
+        String table;
+        String prj;
         int dash = path.indexOf("--");
         if (dash >= 0) {
             table = path.substring(0, dash);
@@ -132,7 +136,7 @@ public class TableDesc extends RootPersistentEntity implements ISourceAware {
     public String resourceName() {
         return makeResourceName(getIdentity(), getProject());
     }
-    
+
     public TableDesc appendColumns(ColumnDesc[] computedColumns, boolean makeCopy) {
         if (computedColumns == null || computedColumns.length == 0) {
             return this;
@@ -150,9 +154,10 @@ public class TableDesc extends RootPersistentEntity implements ISourceAware {
                 if (existingColumns[i].getName().equalsIgnoreCase(computedColumns[j].getName())) {
                     // if we're adding a computed column twice, it should be allowed without producing duplicates
                     if (!existingColumns[i].isComputedColumn()) {
-                        throw new IllegalArgumentException(String.format(
+                        String errorMsg = String.format(Locale.ROOT,
                                 "There is already a column named %s on table %s, please change your computed column name",
-                                new Object[] { computedColumns[j].getName(), this.getIdentity() }));
+                                computedColumns[j].getName(), this.getIdentity());
+                        throw new IllegalArgumentException(errorMsg);
                     } else {
                         isFreshCC = false;
                     }
@@ -175,7 +180,7 @@ public class TableDesc extends RootPersistentEntity implements ISourceAware {
 
     public ColumnDesc findColumnByName(String name) {
         //ignore the db name and table name if exists
-        int lastIndexOfDot = name.lastIndexOf(".");
+        int lastIndexOfDot = name.lastIndexOf('.');
         if (lastIndexOfDot >= 0) {
             name = name.substring(lastIndexOfDot + 1);
         }
@@ -193,7 +198,7 @@ public class TableDesc extends RootPersistentEntity implements ISourceAware {
         if (isBorrowedFromGlobal()) {
             return concatResourcePath(getIdentity(), null);
         }
-        
+
         return concatResourcePath(getIdentity(), project);
     }
 
@@ -201,15 +206,29 @@ public class TableDesc extends RootPersistentEntity implements ISourceAware {
      * @deprecated this is for compatible with data model v1;
      * @return
      */
+    @Deprecated
     public String getResourcePathV1() {
         return concatResourcePath(name, null);
     }
 
     public String getIdentity() {
         if (identity == null) {
-            identity = String.format("%s.%s", this.getDatabase().toUpperCase(), this.getName()).toUpperCase();
+            identity = String.format(Locale.ROOT, "%s.%s", this.getDatabase().toUpperCase(Locale.ROOT), this.getName())
+                    .toUpperCase(Locale.ROOT);
         }
         return identity;
+    }
+
+    public String getIdentityQuoted(String quot) {
+        String dbName = quot + this.getDatabase() + quot;
+        String tableName = quot + this.getName() + quot;
+        return String.format(Locale.ROOT, "%s.%s", dbName, tableName).toUpperCase(Locale.ROOT);
+    }
+
+    public String getFactTableQuoted(String quot) {
+        String database = quot + config.getHiveDatabaseForIntermediateTable() + quot;
+        String table = quot + this.getName() + "_fact" + quot;
+        return database + "." + table;
     }
 
     public boolean isView() {
@@ -293,15 +312,15 @@ public class TableDesc extends RootPersistentEntity implements ISourceAware {
     public void init(KylinConfig config, String project) {
         this.project = project;
         this.config = config;
-        
+
         if (name != null)
-            name = name.toUpperCase();
+            name = name.toUpperCase(Locale.ROOT);
 
         if (getDatabase() != null)
-            setDatabase(getDatabase().toUpperCase());
+            setDatabase(getDatabase().toUpperCase(Locale.ROOT));
 
         if (columns != null) {
-            Arrays.sort(columns, new Comparator<ColumnDesc>() {
+            Arrays.parallelSort(columns, new Comparator<ColumnDesc>() {
                 @Override
                 public int compare(ColumnDesc col1, ColumnDesc col2) {
                     Integer id1 = Integer.parseInt(col1.getId());
@@ -357,6 +376,14 @@ public class TableDesc extends RootPersistentEntity implements ISourceAware {
         return MetadataConstants.KYLIN_INTERMEDIATE_PREFIX + database.getName() + "_" + name;
     }
 
+    public String getMaterializedName(String uuid) {
+        if (uuid == null) {
+            return getMaterializedName();
+        } else
+            return MetadataConstants.KYLIN_INTERMEDIATE_PREFIX + database.getName() + "_" + name + "_"
+                    + uuid.replaceAll("-", "_");
+    }
+
     @Override
     public String toString() {
         return "TableDesc{" + "name='" + name + '\'' + ", columns=" + Arrays.toString(columns) + ", sourceType="
@@ -376,9 +403,15 @@ public class TableDesc extends RootPersistentEntity implements ISourceAware {
         return sourceType;
     }
 
+    // cannot set config in init() due to cascade lock() on projectManager
     @Override
     public KylinConfig getConfig() {
-        return config;
+        if (project == null) {
+            return config;
+        } else {
+            ProjectInstance projInstance = ProjectManager.getInstance(config).getProject(project);
+            return projInstance == null ? config : projInstance.getConfig();
+        }
     }
 
     public void setSourceType(int sourceType) {
@@ -391,6 +424,14 @@ public class TableDesc extends RootPersistentEntity implements ISourceAware {
 
     public void setTableType(String tableType) {
         this.tableType = tableType;
+    }
+
+    public boolean isStreamingTable() {
+        if (sourceType == ISourceAware.ID_KAFKA
+                || sourceType == ISourceAware.ID_KAFKA_HIVE) {
+            return true;
+        }
+        return false;
     }
 
 }

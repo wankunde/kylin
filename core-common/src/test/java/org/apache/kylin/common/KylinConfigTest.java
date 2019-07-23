@@ -18,12 +18,6 @@
 
 package org.apache.kylin.common;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertNotEquals;
-import static org.junit.Assert.assertNotNull;
-import static org.junit.Assert.assertNull;
-import static org.junit.Assert.assertTrue;
-
 import java.util.Map;
 import java.util.Properties;
 
@@ -31,6 +25,13 @@ import org.apache.kylin.common.KylinConfig.SetAndUnsetThreadLocalConfig;
 import org.junit.Test;
 
 import com.google.common.collect.Maps;
+
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertNotEquals;
+import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertTrue;
+
 
 public class KylinConfigTest extends HotLoadKylinPropertiesTestCase {
 
@@ -146,4 +147,55 @@ public class KylinConfigTest extends HotLoadKylinPropertiesTestCase {
         String s = override.get("test2");
         assertEquals("test2", s);
     }
+
+    @Test
+    public void testCalciteExtrasProperties() {
+        KylinConfig conf = KylinConfig.getInstanceFromEnv();
+        Properties extras = conf.getCalciteExtrasProperties();
+        assertEquals("true", extras.getProperty("caseSensitive"));
+        assertEquals("TO_UPPER", extras.getProperty("unquotedCasing"));
+        assertEquals("DOUBLE_QUOTE", extras.getProperty("quoting"));
+        assertEquals("LENIENT", extras.getProperty("conformance"));
+
+        conf.setProperty("kylin.query.calcite.extras-props.caseSensitive", "false");
+        conf.setProperty("kylin.query.calcite.extras-props.unquotedCasing", "UNCHANGED");
+        conf.setProperty("kylin.query.calcite.extras-props.quoting", "BRACKET");
+        conf.setProperty("kylin.query.calcite.extras-props.conformance", "DEFAULT");
+        extras = conf.getCalciteExtrasProperties();
+        assertEquals("false", extras.getProperty("caseSensitive"));
+        assertEquals("UNCHANGED", extras.getProperty("unquotedCasing"));
+        assertEquals("BRACKET", extras.getProperty("quoting"));
+        assertEquals("DEFAULT", extras.getProperty("conformance"));
+    }
+
+  @Test
+  public void testSetKylinConfigInEnvIfMissingTakingEmptyProperties() {
+      Properties properties = new Properties();
+      KylinConfig.setKylinConfigInEnvIfMissing(properties);
+
+      assertEquals(0, properties.size());
+      assertTrue(properties.isEmpty());
+
+      KylinConfig.setKylinConfigInEnvIfMissing(properties);
+
+      assertEquals(0, properties.size());
+      assertTrue(properties.isEmpty());
+  }
+
+  @Test(expected = IllegalStateException.class)
+  public void testCreateInstanceFromUriThrowsIllegalStateExceptionOne() {
+        KylinConfig.createInstanceFromUri("cb%MnlG]3:nav");
+  }
+
+  @Test(expected = RuntimeException.class)
+  public void testCreateInstanceFromUriThrowsRuntimeException() {
+      Properties properties = new Properties();
+      KylinConfig.setKylinConfigInEnvIfMissing(properties);
+
+      assertEquals(0, properties.size());
+      assertTrue(properties.isEmpty());
+
+      KylinConfig.createInstanceFromUri("dHy3K~m");
+  }
+
 }

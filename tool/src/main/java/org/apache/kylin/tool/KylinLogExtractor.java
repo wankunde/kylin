@@ -23,6 +23,7 @@ import java.io.File;
 import java.util.ArrayList;
 import java.util.List;
 
+import java.util.Locale;
 import org.apache.commons.cli.Option;
 import org.apache.commons.cli.OptionBuilder;
 import org.apache.kylin.common.KylinConfig;
@@ -72,7 +73,7 @@ public class KylinLogExtractor extends AbstractInfoExtractor {
     protected void executeExtract(OptionsHelper optionsHelper, File exportDir) throws Exception {
         beforeExtract();
 
-        int logPeriod = optionsHelper.hasOption(OPTION_LOG_PERIOD) ? Integer.valueOf(optionsHelper.getOptionValue(OPTION_LOG_PERIOD)) : DEFAULT_LOG_PERIOD;
+        int logPeriod = optionsHelper.hasOption(OPTION_LOG_PERIOD) ? Integer.parseInt(optionsHelper.getOptionValue(OPTION_LOG_PERIOD)) : DEFAULT_LOG_PERIOD;
 
         if (logPeriod < 1) {
             logger.warn("No logs to extract.");
@@ -107,7 +108,8 @@ public class KylinLogExtractor extends AbstractInfoExtractor {
         for (File logFile : requiredLogFiles) {
             logger.info("Log file:" + logFile.getAbsolutePath());
             if (logFile.exists()) {
-                String cmd = String.format("cp %s %s", logFile.getAbsolutePath(), exportDir.getAbsolutePath());
+                String cmd = String.format(Locale.ROOT, "cp %s %s", logFile.getAbsolutePath(), exportDir
+                    .getAbsolutePath());
                 config.getCliCommandExecutor().execute(cmd);
             }
         }

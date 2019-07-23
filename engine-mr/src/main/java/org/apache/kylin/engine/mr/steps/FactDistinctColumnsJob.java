@@ -78,6 +78,19 @@ public class FactDistinctColumnsJob extends AbstractHadoopJob {
             // add metadata to distributed cache
             CubeManager cubeMgr = CubeManager.getInstance(KylinConfig.getInstanceFromEnv());
             CubeInstance cube = cubeMgr.getCube(cubeName);
+            CubeSegment segment = cube.getSegmentById(segmentID);
+            if (segment == null) {
+                logger.warn("Failed to find segment {} in cube {}", segmentID, cube);
+                cube = cubeMgr.reloadCubeQuietly(cubeName);
+                segment = cube.getSegmentById(segmentID);
+            }
+            if (segment == null) {
+                logger.error("Failed to find {} in cube {}", segmentID, cube);
+                for (CubeSegment s : cube.getSegments()) {
+                    logger.error(s.getName() + " with status " + s.getStatus());
+                }
+                throw new IllegalStateException();
+            }
 
             job.getConfiguration().set(BatchConstants.CFG_CUBE_NAME, cubeName);
             job.getConfiguration().set(BatchConstants.CFG_CUBE_SEGMENT_ID, segmentID);
@@ -87,15 +100,6 @@ public class FactDistinctColumnsJob extends AbstractHadoopJob {
             logger.info("Starting: " + job.getJobName());
 
             setJobClasspath(job, cube.getConfig());
-
-            CubeSegment segment = cube.getSegmentById(segmentID);
-            if (segment == null) {
-                logger.error("Failed to find {} in cube {}", segmentID, cube);
-                for (CubeSegment s : cube.getSegments()) {
-                    logger.error(s.getName() + " with status " + s.getStatus());
-                }
-                throw new IllegalStateException();
-            }
 
             setupMapper(segment);
             setupReducer(output, segment);
@@ -131,6 +135,7 @@ public class FactDistinctColumnsJob extends AbstractHadoopJob {
             throws IOException {
         FactDistinctColumnsReducerMapping reducerMapping = new FactDistinctColumnsReducerMapping(cubeSeg.getCubeInstance());
         int numberOfReducers = reducerMapping.getTotalReducerNum();
+        logger.info("{} has reducers {}.", this.getClass().getName(), numberOfReducers);
         if (numberOfReducers > 250) {
             throw new IllegalArgumentException(
                     "The max reducer number for FactDistinctColumnsJob is 250, but now it is "
@@ -141,7 +146,6 @@ public class FactDistinctColumnsJob extends AbstractHadoopJob {
         job.setReducerClass(FactDistinctColumnsReducer.class);
         job.setPartitionerClass(FactDistinctColumnPartitioner.class);
         job.setNumReduceTasks(numberOfReducers);
-        job.getConfiguration().setInt(BatchConstants.CFG_HLL_REDUCER_NUM, reducerMapping.getCuboidRowCounterReducerNum());
 
         // make each reducer output to respective dir
         MultipleOutputs.addNamedOutput(job, BatchConstants.CFG_OUTPUT_COLUMN, SequenceFileOutputFormat.class, NullWritable.class, Text.class);

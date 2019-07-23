@@ -22,6 +22,7 @@ import java.io.Serializable;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
@@ -47,7 +48,7 @@ public class FunctionDesc implements Serializable {
 
     public static FunctionDesc newInstance(String expression, ParameterDesc param, String returnType) {
         FunctionDesc r = new FunctionDesc();
-        r.expression = (expression == null) ? null : expression.toUpperCase();
+        r.expression = (expression == null) ? null : expression.toUpperCase(Locale.ROOT);
         r.parameter = param;
         r.returnType = returnType;
         r.returnDataType = DataType.getType(returnType);
@@ -59,14 +60,13 @@ public class FunctionDesc implements Serializable {
     public static final String FUNC_MAX = "MAX";
     public static final String FUNC_COUNT = "COUNT";
     public static final String FUNC_COUNT_DISTINCT = "COUNT_DISTINCT";
+    public static final String FUNC_GROUPING = "GROUPING";
     public static final String FUNC_PERCENTILE = "PERCENTILE_APPROX";
     public static final Set<String> BUILT_IN_AGGREGATIONS = Sets.newHashSet();
 
     static {
-        BUILT_IN_AGGREGATIONS.add(FUNC_COUNT);
         BUILT_IN_AGGREGATIONS.add(FUNC_MAX);
         BUILT_IN_AGGREGATIONS.add(FUNC_MIN);
-        BUILT_IN_AGGREGATIONS.add(FUNC_SUM);
         BUILT_IN_AGGREGATIONS.add(FUNC_COUNT_DISTINCT);
         BUILT_IN_AGGREGATIONS.add(FUNC_PERCENTILE);
     }
@@ -88,9 +88,18 @@ public class FunctionDesc implements Serializable {
     private DataType returnDataType;
     private MeasureType<?> measureType;
     private boolean isDimensionAsMetric = false;
+    private boolean isMrDict = false;
+
+    public boolean isMrDict() {
+        return isMrDict;
+    }
+
+    public void setMrDict(boolean mrDict) {
+        isMrDict = mrDict;
+    }
 
     public void init(DataModelDesc model) {
-        expression = expression.toUpperCase();
+        expression = expression.toUpperCase(Locale.ROOT);
         if (expression.equals(PercentileMeasureType.FUNC_PERCENTILE)) {
             expression = PercentileMeasureType.FUNC_PERCENTILE_APPROX; // for backward compatibility
         }
@@ -144,8 +153,8 @@ public class FunctionDesc implements Serializable {
     }
 
     public String getRewriteFieldName() {
-        if (isCount()) {
-            return "_KY_" + "COUNT__"; // ignores parameter, count(*), count(1), count(col) are all the same
+        if (isCountConstant()) {
+            return "_KY_" + "COUNT__"; // ignores parameter, count(*) and count(1) are the same
         } else if (isCountDistinct()) {
             return "_KY_" + getFullExpressionInAlphabetOrder().replaceAll("[(),. ]", "_");
         } else {
@@ -158,7 +167,15 @@ public class FunctionDesc implements Serializable {
             if (isMax() || isMin()) {
                 return parameter.getColRefs().get(0).getType();
             } else if (isSum()) {
-                return parameter.getColRefs().get(0).getType();
+                if (parameter.isColumnType()) {
+                    if (parameter.getColRefs().get(0).getType().isIntegerFamily()) {
+                        return DataType.getType("bigint");
+                    } else {
+                        return parameter.getColRefs().get(0).getType();
+                    }
+                } else {
+                    return DataType.getType("bigint");
+                }
             } else if (isCount()) {
                 return DataType.getType("bigint");
             } else {
@@ -198,6 +215,11 @@ public class FunctionDesc implements Serializable {
     public boolean isCountDistinct() {
         return FUNC_COUNT_DISTINCT.equalsIgnoreCase(expression);
     }
+
+    public boolean isCountConstant() {//count(*) and count(1)
+        return FUNC_COUNT.equalsIgnoreCase(expression) && (parameter == null || parameter.isConstant());
+    }
+
 
     /**
      * Get Full Expression such as sum(amount), count(1), count(*)...
@@ -249,7 +271,7 @@ public class FunctionDesc implements Serializable {
     public void setExpression(String expression) {
         this.expression = expression;
     }
-    
+
     public ParameterDesc getParameter() {
         return parameter;
     }
@@ -272,6 +294,7 @@ public class FunctionDesc implements Serializable {
 
     public void setReturnType(String returnType) {
         this.returnType = returnType;
+        this.returnDataType = DataType.getType(returnType);
     }
 
     public DataType getReturnDataType() {
@@ -287,7 +310,7 @@ public class FunctionDesc implements Serializable {
         final int prime = 31;
         int result = 1;
         result = prime * result + ((expression == null) ? 0 : expression.hashCode());
-        result = prime * result + ((isCount() || parameter == null) ? 0 : parameter.hashCode());
+        result = prime * result + ((isCountConstant() || parameter == null) ? 0 : parameter.hashCode());
         // NOTE: don't compare returnType, FunctionDesc created at query engine does not have a returnType
         return result;
     }
@@ -314,7 +337,9 @@ public class FunctionDesc implements Serializable {
             } else {
                 return parameter.equalInArbitraryOrder(other.parameter);
             }
-        } else if (!isCount()) { // NOTE: don't check the parameter of count()
+        } else if (isCountConstant() && ((FunctionDesc) obj).isCountConstant()) { //count(*) and count(1) are equals
+            return true;
+        } else {
             if (parameter == null) {
                 if (other.parameter != null)
                     return false;

@@ -18,10 +18,14 @@
 
 package org.apache.kylin.job.execution;
 
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 
 import org.apache.kylin.common.KylinConfig;
+import org.apache.kylin.common.lock.DistributedLockFactory;
 import org.apache.kylin.job.exception.ExecuteException;
 
 import com.google.common.collect.Lists;
@@ -80,6 +84,7 @@ public class DefaultChainedExecutable extends AbstractExecutable implements Chai
             info.put(START_TIME, Long.toString(System.currentTimeMillis()));
             getManager().updateJobOutput(getId(), ExecutableState.RUNNING, info, null);
         }
+        getManager().addJobInfo(getId(), BUILD_INSTANCE, DistributedLockFactory.processAndHost());
     }
 
     @Override
@@ -109,9 +114,9 @@ public class DefaultChainedExecutable extends AbstractExecutable implements Chai
                             "There shouldn't be a running subtask[jobId: {}, jobName: {}], \n"
                                     + "it might cause endless state, will retry to fetch subtask's state.",
                             task.getId(), task.getName());
-                    boolean retryRet = retryFetchTaskStatus(task);
-                    if (false == retryRet)
-                        hasError = true;
+                    getManager().updateJobOutput(task.getId(), ExecutableState.ERROR, null,
+                            "killed due to inconsistent state");
+                    hasError = true;
                 }
 
                 final ExecutableState status = task.getStatus();
@@ -167,40 +172,37 @@ public class DefaultChainedExecutable extends AbstractExecutable implements Chai
 
     @Override
     public void addTask(AbstractExecutable executable) {
-        executable.setId(getId() + "-" + String.format("%02d", subTasks.size()));
+        executable.setParentExecutable(this);
+        executable.setId(getId() + "-" + String.format(Locale.ROOT, "%02d", subTasks.size()));
         this.subTasks.add(executable);
     }
 
-    private boolean retryFetchTaskStatus(Executable task) {
-        boolean hasRunning = false;
-        int retry = 1;
-        while (retry <= 10) {
-            ExecutableState retryState = task.getStatus();
-            if (retryState == ExecutableState.RUNNING) {
-                try {
-                    Thread.sleep(100);
-                } catch (InterruptedException e) {
-                    logger.error("Failed to Sleep: ", e);
-                }
-                hasRunning = true;
-                logger.error("With {} times retry, it's state is still RUNNING", retry);
-            } else {
-                logger.info("With {} times retry, status is changed to: {}", retry, retryState);
-                hasRunning = false;
-                break;
-            }
-            retry++;
-        }
-        if (hasRunning) {
-            logger.error("Parent task: {} is finished, but it's subtask: {}'s state is still RUNNING \n"
-                    + ", mark parent task failed.", getName(), task.getName());
-            return false;
-        }
-        return true;
-    }
-    
     @Override
     public int getDefaultPriority() {
         return DEFAULT_PRIORITY;
+    }
+
+    public String findExtraInfo(String key, String dft) {
+        return findExtraInfo(key, dft, false);
+    }
+
+    public String findExtraInfoBackward(String key, String dft) {
+        return findExtraInfo(key, dft, true);
+    }
+
+    private String findExtraInfo(String key, String dft, boolean backward) {
+        ArrayList<AbstractExecutable> tasks = new ArrayList<AbstractExecutable>(getTasks());
+
+        if (backward) {
+            Collections.reverse(tasks);
+        }
+
+        for (AbstractExecutable child : tasks) {
+            Output output = getManager().getOutput(child.getId());
+            String value = output.getExtra().get(key);
+            if (value != null)
+                return value;
+        }
+        return dft;
     }
 }

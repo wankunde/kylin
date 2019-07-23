@@ -27,7 +27,9 @@ import org.apache.kylin.cube.CubeSegment;
 import org.apache.kylin.cube.model.CubeDesc;
 import org.apache.kylin.cube.model.DimensionDesc;
 import org.apache.kylin.metadata.model.SegmentRange.TSRange;
+import org.apache.kylin.metadata.realization.RealizationStatusEnum;
 import org.apache.kylin.rest.exception.InternalErrorException;
+import org.apache.kylin.rest.exception.NotFoundException;
 import org.apache.kylin.rest.request.CubeRequest;
 import org.apache.kylin.rest.response.CubeInstanceResponse;
 import org.apache.kylin.rest.response.GeneralResponse;
@@ -137,10 +139,29 @@ public class CubeControllerTest extends ServiceTestBase {
         CubeDesc[] cubes = cubeDescController.getCube(cubeName);
         Assert.assertNotNull(cubes);
 
-        cubeController.deleteSegment(cubeName, "20131212000000_20140112000000");
+        String segmentName = "20131212000000_20140112000000";
+
+        CubeInstance cube = cubeService.getCubeManager().getCube(cubeName);
+        CubeSegment toDelete = null;
+        for (CubeSegment seg : cube.getSegments()) {
+            if (seg.getName().equals(segmentName)) {
+                toDelete = seg;
+                break;
+            }
+        }
+
+        Assert.assertNotNull(toDelete);
+        String segId = toDelete.getUuid();
+
+        cubeController.deleteSegment(cubeName, segmentName);
+
+        // delete success, no related job 'NEW' segment can be delete
+        if (cubeService.isOrphonSegment(cube, segId)){
+            throw new InternalErrorException();
+        }
     }
 
-    @Test(expected = InternalErrorException.class)
+    @Test(expected = NotFoundException.class)
     public void testDeleteSegmentNotExist() throws IOException {
         String cubeName = "test_kylin_cube_with_slr_ready_3_segments";
         CubeDesc[] cubes = cubeDescController.getCube(cubeName);
@@ -206,6 +227,17 @@ public class CubeControllerTest extends ServiceTestBase {
                 }
             }
         }
+    }
+
+    @Test
+    public void tesDeleteDescBrokenCube() throws Exception {
+        final String cubeName = "ci_left_join_cube";
+        CubeInstance cubeInstance = cubeService.getCubeManager().getCube(cubeName);
+        CubeDesc cubeDesc = cubeInstance.getDescriptor();
+        cubeDesc.setModel(null);
+        cubeInstance.setStatus(RealizationStatusEnum.DESCBROKEN);
+        cubeController.deleteCube(cubeName);
+        Assert.assertNull(cubeService.getCubeManager().getCube(cubeName));
     }
 
 }

@@ -29,9 +29,9 @@ import java.util.Set;
 
 import org.apache.kylin.common.util.ByteArray;
 import org.apache.kylin.common.util.ImmutableBitSet;
-import org.apache.kylin.common.util.Pair;
 import org.apache.kylin.gridtable.GTInfo;
 import org.apache.kylin.gridtable.GTScanRequest;
+import org.apache.kylin.metadata.expression.TupleExpression;
 import org.apache.kylin.metadata.filter.CompareTupleFilter;
 import org.apache.kylin.metadata.filter.ConstantTupleFilter;
 import org.apache.kylin.metadata.filter.LogicalTupleFilter;
@@ -48,18 +48,21 @@ public abstract class ScanRangePlannerBase {
     //GT 
     protected GTInfo gtInfo;
     protected TupleFilter gtFilter;
-    protected Pair<ByteArray, ByteArray> gtStartAndEnd;
-    protected TblColRef gtPartitionCol;
     protected ImmutableBitSet gtDimensions;
     protected ImmutableBitSet gtAggrGroups;
     protected ImmutableBitSet gtAggrMetrics;
     protected String[] gtAggrFuncs;
     protected TupleFilter havingFilter;
     protected boolean isPartitionColUsingDatetimeEncoding = true;
+    protected int onlyShardId = -1;
 
     protected RecordComparator rangeStartComparator;
     protected RecordComparator rangeEndComparator;
     protected RecordComparator rangeStartEndComparator;
+
+    protected ImmutableBitSet gtDynColumns;
+    protected ImmutableBitSet gtRtAggrMetrics;
+    protected Map<Integer, TupleExpression> tupleExpressionMap;
 
     public abstract GTScanRequest planScanRequest();
 

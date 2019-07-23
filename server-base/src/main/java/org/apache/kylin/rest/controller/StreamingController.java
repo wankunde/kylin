@@ -20,11 +20,11 @@ package org.apache.kylin.rest.controller;
 
 import java.io.IOException;
 import java.util.List;
-import java.util.UUID;
 
 import org.apache.commons.lang.StringUtils;
 import org.apache.kylin.common.util.HadoopUtil;
 import org.apache.kylin.common.util.JsonUtil;
+import org.apache.kylin.common.util.RandomUtil;
 import org.apache.kylin.metadata.model.TableDesc;
 import org.apache.kylin.metadata.streaming.StreamingConfig;
 import org.apache.kylin.rest.exception.BadRequestException;
@@ -86,7 +86,7 @@ public class StreamingController extends BasicController {
         } catch (IOException e) {
 
             logger.error("Failed to deal with the request:" + e.getLocalizedMessage(), e);
-            throw new InternalErrorException("Failed to deal with the request: " + e.getLocalizedMessage());
+            throw new InternalErrorException("Failed to deal with the request: " + e.getLocalizedMessage(), e);
         }
     }
 
@@ -101,7 +101,7 @@ public class StreamingController extends BasicController {
             return kafkaConfigService.getKafkaConfigs(kafkaConfigName, project, limit, offset);
         } catch (IOException e) {
             logger.error("Failed to deal with the request:" + e.getLocalizedMessage(), e);
-            throw new InternalErrorException("Failed to deal with the request: " + e.getLocalizedMessage());
+            throw new InternalErrorException("Failed to deal with the request: " + e.getLocalizedMessage(), e);
         }
     }
 
@@ -131,7 +131,7 @@ public class StreamingController extends BasicController {
         boolean saveStreamingSuccess = false, saveKafkaSuccess = false;
 
         try {
-            tableService.addStreamingTable(tableDesc, project);
+            tableService.loadTableToProject(tableDesc, null, project);
         } catch (IOException e) {
             throw new BadRequestException("Failed to add streaming table.");
         }
@@ -144,15 +144,15 @@ public class StreamingController extends BasicController {
                 throw new BadRequestException("StremingConfig name should not be empty.");
             }
             try {
-                streamingConfig.setUuid(UUID.randomUUID().toString());
+                streamingConfig.setUuid(RandomUtil.randomUUID().toString());
                 streamingService.createStreamingConfig(streamingConfig, project);
                 saveStreamingSuccess = true;
             } catch (IOException e) {
                 logger.error("Failed to save StreamingConfig:" + e.getLocalizedMessage(), e);
-                throw new InternalErrorException("Failed to save StreamingConfig: " + e.getLocalizedMessage());
+                throw new InternalErrorException("Failed to save StreamingConfig: " + e.getLocalizedMessage(), e);
             }
             try {
-                kafkaConfig.setUuid(UUID.randomUUID().toString());
+                kafkaConfig.setUuid(RandomUtil.randomUUID().toString());
                 kafkaConfigService.createKafkaConfig(kafkaConfig, project);
                 saveKafkaSuccess = true;
             } catch (IOException e) {
@@ -160,10 +160,10 @@ public class StreamingController extends BasicController {
                     streamingService.dropStreamingConfig(streamingConfig, project);
                 } catch (IOException e1) {
                     throw new InternalErrorException(
-                            "StreamingConfig is created, but failed to create KafkaConfig: " + e.getLocalizedMessage());
+                            "StreamingConfig is created, but failed to create KafkaConfig: " + e.getLocalizedMessage(), e);
                 }
                 logger.error("Failed to save KafkaConfig:" + e.getLocalizedMessage(), e);
-                throw new InternalErrorException("Failed to save KafkaConfig: " + e.getLocalizedMessage());
+                throw new InternalErrorException("Failed to save KafkaConfig: " + e.getLocalizedMessage(), e);
             }
         } finally {
             if (saveKafkaSuccess == false || saveStreamingSuccess == false) {
@@ -176,7 +176,7 @@ public class StreamingController extends BasicController {
                     } catch (IOException e) {
                         throw new InternalErrorException(
                                 "Action failed and failed to rollback the created streaming config: "
-                                        + e.getLocalizedMessage());
+                                        + e.getLocalizedMessage(), e);
                     }
                 }
                 if (saveKafkaSuccess == true) {
@@ -186,7 +186,7 @@ public class StreamingController extends BasicController {
                     } catch (IOException e) {
                         throw new InternalErrorException(
                                 "Action failed and failed to rollback the created kafka config: "
-                                        + e.getLocalizedMessage());
+                                        + e.getLocalizedMessage(), e);
                     }
                 }
             }
@@ -218,7 +218,7 @@ public class StreamingController extends BasicController {
             throw new ForbiddenException("You don't have right to update this StreamingConfig.");
         } catch (Exception e) {
             logger.error("Failed to deal with the request:" + e.getLocalizedMessage(), e);
-            throw new InternalErrorException("Failed to deal with the request: " + e.getLocalizedMessage());
+            throw new InternalErrorException("Failed to deal with the request: " + e.getLocalizedMessage(), e);
         }
         try {
             kafkaConfig = kafkaConfigService.updateKafkaConfig(kafkaConfig, project);
@@ -226,7 +226,7 @@ public class StreamingController extends BasicController {
             throw new ForbiddenException("You don't have right to update this KafkaConfig.");
         } catch (Exception e) {
             logger.error("Failed to deal with the request:" + e.getLocalizedMessage(), e);
-            throw new InternalErrorException("Failed to deal with the request: " + e.getLocalizedMessage());
+            throw new InternalErrorException("Failed to deal with the request: " + e.getLocalizedMessage(), e);
         }
 
         streamingRequest.setSuccessful(true);

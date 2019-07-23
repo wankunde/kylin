@@ -18,7 +18,7 @@
 
 'use strict';
 
-KylinApp.controller('CubeCtrl', function ($scope, $rootScope, AccessService, MessageService, CubeService, cubeConfig, TableService, ModelGraphService, UserService,SweetAlert,loadingRequest,modelsManager,$modal,cubesManager, $location) {
+KylinApp.controller('CubeCtrl', function ($scope, $rootScope, AccessService, MessageService, CubeService, cubeConfig, TableService, ModelGraphService, UserService,SweetAlert,loadingRequest,modelsManager,$modal,cubesManager, $location, MessageBox, AdminStreamingService) {
     $scope.newAccess = null;
     $scope.state = {jsonEdit: false};
 
@@ -76,7 +76,7 @@ KylinApp.controller('CubeCtrl', function ($scope, $rootScope, AccessService, Mes
             cube.detail.notify_list = cube.notifyListString.split(",");
         }
         CubeService.updateNotifyList({cubeId: cube.name}, cube.detail.notify_list, function () {
-            SweetAlert.swal('Success!', 'Notify List updated successfully!', 'success');
+            MessageBox.successNotify('Notify List updated successfully!');
         },function(e){
             if(e.data&& e.data.exception){
                 var message =e.data.exception;
@@ -169,7 +169,7 @@ KylinApp.controller('CubeCtrl', function ($scope, $rootScope, AccessService, Mes
                 }
             }, function(e) {
                 loadingRequest.hide();
-                SweetAlert.swal('Oops...', 'Failed to get recommend cuboid.', 'error');
+                SweetAlert.swal('Oops...', 'Failed to get recommend Cuboid; Check whether you have enabled System Cube.', 'error');
                 console.error('recommend cuboid error', e.data);
             });
         } else {
@@ -293,5 +293,39 @@ KylinApp.controller('CubeCtrl', function ($scope, $rootScope, AccessService, Mes
             return d3.scale.category20c().range()[colorIndex+3];
         }
     }
+
+    // streaming cube status
+    $scope.getStreamingInfo = function(cube) {
+        AdminStreamingService.getCubeRealTimeStats({cubeName: cube.name}, function(data){
+            $scope.replicaSets = data.receiver_cube_real_time_states;
+        });
+    };
+
+    // streaming node stats detail
+    $scope.nodeStatsDetail = function(node, receiverStatus) {
+      $modal.open({
+        templateUrl: 'nodeStatsDetail.html',
+        controller: NodeStatsDetailCtrlV2,
+        backdrop: 'static',
+        windowClass: 'cube-streaming-stats-modal',
+        resolve: {
+          node: function () {
+            return node;
+          },
+          receiverStatus: function () {
+            return receiverStatus;
+          }
+        }
+      });
+    };
+
+    var NodeStatsDetailCtrlV2 = function($scope, node, receiverStatus, $modalInstance, MessageService) {
+        $scope.receiverStats = receiverStatus;
+        $scope.node = node;
+
+        $scope.cancel = function () {
+            $modalInstance.dismiss('cancel');
+        };
+     };
 });
 

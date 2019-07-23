@@ -23,9 +23,9 @@ import java.io.InputStream;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
-import java.util.UUID;
 
 import org.apache.kylin.common.KylinConfig;
 import org.apache.kylin.common.persistence.JsonSerializer;
@@ -36,6 +36,7 @@ import org.apache.kylin.common.util.AutoReadWriteLock;
 import org.apache.kylin.common.util.AutoReadWriteLock.AutoLock;
 import org.apache.kylin.common.util.JsonUtil;
 import org.apache.kylin.common.util.Pair;
+import org.apache.kylin.common.util.RandomUtil;
 import org.apache.kylin.metadata.cachesync.Broadcaster;
 import org.apache.kylin.metadata.cachesync.Broadcaster.Event;
 import org.apache.kylin.metadata.cachesync.CachedCrudAssist;
@@ -153,7 +154,7 @@ public class TableMetadataManager {
 
     public void reloadSourceTableQuietly(String table, String project) {
         try (AutoLock lock = srcTableMapLock.lockForWrite()) {
-            srcTableCrud.reloadQuietly(TableDesc.concatResourcePath(table, project));
+            srcTableCrud.reloadQuietly(TableDesc.makeResourceName(table, project));
         }
     }
 
@@ -230,9 +231,9 @@ public class TableMetadataManager {
      */
     private String getTableIdentity(String tableName) {
         if (!tableName.contains("."))
-            return "DEFAULT." + tableName.toUpperCase();
+            return "DEFAULT." + tableName.toUpperCase(Locale.ROOT);
         else
-            return tableName.toUpperCase();
+            return tableName.toUpperCase(Locale.ROOT);
     }
 
     public void saveSourceTable(TableDesc srcTable, String prj) throws IOException {
@@ -353,7 +354,7 @@ public class TableMetadataManager {
             if (null == result) {
                 result = new TableExtDesc();
                 result.setIdentity(t.getIdentity());
-                result.setUuid(UUID.randomUUID().toString());
+                result.setUuid(RandomUtil.randomUUID().toString());
                 result.setLastModified(0);
                 result.init(t.getProject());
                 srcExtMap.putLocal(mapKey(t.getIdentity(), t.getProject()), result);
@@ -382,7 +383,7 @@ public class TableMetadataManager {
             // what is this doing??
             String path = TableExtDesc.concatResourcePath(tableExt.getIdentity(), prj);
             ResourceStore store = getStore();
-            TableExtDesc t = store.getResource(path, TableExtDesc.class, TABLE_EXT_SERIALIZER);
+            TableExtDesc t = store.getResource(path, TABLE_EXT_SERIALIZER);
             if (t != null && t.getIdentity() == null)
                 store.deleteResource(path);
 
@@ -409,7 +410,7 @@ public class TableMetadataManager {
             RawResource res = store.getResource(
                     ResourceStore.TABLE_EXD_RESOURCE_ROOT + "/" + resourceName + MetadataConstants.FILE_SURFIX);
 
-            InputStream is = res.inputStream;
+            InputStream is = res.content();
             try {
                 attrs.putAll(JsonUtil.readValue(is, HashMap.class));
             } finally {
@@ -426,7 +427,7 @@ public class TableMetadataManager {
         String tableIdentity = TableDesc.parseResourcePath(resourceName).getFirst();
         TableExtDesc result = new TableExtDesc();
         result.setIdentity(tableIdentity);
-        result.setUuid(UUID.randomUUID().toString());
+        result.setUuid(RandomUtil.randomUUID().toString());
         result.setLastModified(0);
         result.setCardinality(cardinality);
         return result;

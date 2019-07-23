@@ -33,6 +33,7 @@ import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
@@ -44,6 +45,9 @@ import java.util.Random;
 import java.util.TreeSet;
 
 import org.apache.kylin.common.util.Bytes;
+import org.apache.kylin.common.util.LocalFileMetadataTestCase;
+import org.junit.AfterClass;
+import org.junit.BeforeClass;
 import org.junit.Ignore;
 import org.junit.Test;
 
@@ -52,6 +56,15 @@ import org.junit.Test;
  */
 
 public class TrieDictionaryForestTest {
+    @BeforeClass
+    public static void setUp() {
+        LocalFileMetadataTestCase.staticCreateTestMetadata();
+    }
+
+    @AfterClass
+    public static void after() {
+        LocalFileMetadataTestCase.staticCleanupTestMetadata();
+    }
 
     @Test
     public void testEmptyDict() {
@@ -754,7 +767,7 @@ public class TrieDictionaryForestTest {
     private void evaluateDataSize(ArrayList<String> list) {
         long size = 0;
         for (String str : list)
-            size += str.getBytes().length;
+            size += str.getBytes(StandardCharsets.UTF_8).length;
         System.out.println("test data size : " + size / (1024 * 1024) + " MB");
     }
 
@@ -763,7 +776,7 @@ public class TrieDictionaryForestTest {
         Iterator<String> itr = rs.iterator();
         long bytesCount = 0;
         while (itr.hasNext())
-            bytesCount += itr.next().getBytes().length;
+            bytesCount += itr.next().getBytes(StandardCharsets.UTF_8).length;
         System.out.println("test data size : " + bytesCount / (1024 * 1024) + " MB");
     }
 

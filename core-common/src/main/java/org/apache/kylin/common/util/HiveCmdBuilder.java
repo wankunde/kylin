@@ -18,8 +18,10 @@
 
 package org.apache.kylin.common.util;
 
-import java.util.ArrayList;
+import java.util.List;
+import java.util.Locale;
 import java.util.Map;
+import java.util.UUID;
 
 import org.apache.commons.lang.StringUtils;
 import org.apache.kylin.common.KylinConfig;
@@ -31,7 +33,6 @@ import com.google.common.collect.Lists;
 public class HiveCmdBuilder {
     public static final Logger logger = LoggerFactory.getLogger(HiveCmdBuilder.class);
 
-    public static final String HIVE_CONF_FILENAME = "kylin_hive_conf";
     static final String CREATE_HQL_TMP_FILE_TEMPLATE = "cat >%s<<EOL\n%sEOL";
 
     public enum HiveClientMode {
@@ -39,16 +40,17 @@ public class HiveCmdBuilder {
     }
 
     private KylinConfig kylinConfig;
-    final private Map<String, String> hiveConfProps;
-    final private ArrayList<String> statements = Lists.newArrayList();
+    private final Map<String, String> hiveConfProps;
+    private final List<String> statements = Lists.newArrayList();
 
     public HiveCmdBuilder() {
         kylinConfig = KylinConfig.getInstanceFromEnv();
-        hiveConfProps = HiveConfigurationUtil.loadHiveConfiguration();
+        hiveConfProps = SourceConfigurationUtil.loadHiveConfiguration();
+        hiveConfProps.putAll(kylinConfig.getHiveConfigOverride());
     }
 
     public String build() {
-        HiveClientMode clientMode = HiveClientMode.valueOf(kylinConfig.getHiveClientMode().toUpperCase());
+        HiveClientMode clientMode = HiveClientMode.valueOf(kylinConfig.getHiveClientMode().toUpperCase(Locale.ROOT));
         String beelineShell = kylinConfig.getHiveBeelineShell();
         String beelineParams = kylinConfig.getHiveBeelineParams();
         if (kylinConfig.getEnableSparkSqlForTableOps()) {
@@ -61,13 +63,14 @@ public class HiveCmdBuilder {
             }
         }
 
-        StringBuffer buf = new StringBuffer();
+        StringBuilder buf = new StringBuilder();
 
         switch (clientMode) {
         case CLI:
             buf.append("hive -e \"");
             for (String statement : statements) {
-                buf.append(statement).append("\n");
+                //in bash need escape " and ` by using \
+                buf.append(statement.replaceAll("`", "\\\\`")).append("\n");
             }
             buf.append("\"");
             buf.append(parseProps());
@@ -76,12 +79,12 @@ public class HiveCmdBuilder {
             String tmpHqlPath = null;
             StringBuilder hql = new StringBuilder();
             try {
-                tmpHqlPath = "/tmp/" + System.currentTimeMillis() + ".hql";
+                tmpHqlPath = "/tmp/" + UUID.randomUUID().toString() + ".hql";
                 for (String statement : statements) {
-                    hql.append(statement);
+                    hql.append(statement.replaceAll("`", "\\\\`"));
                     hql.append("\n");
                 }
-                String createFileCmd = String.format(CREATE_HQL_TMP_FILE_TEMPLATE, tmpHqlPath, hql);
+                String createFileCmd = String.format(Locale.ROOT, CREATE_HQL_TMP_FILE_TEMPLATE, tmpHqlPath, hql);
                 buf.append(createFileCmd);
                 buf.append("\n");
                 buf.append(beelineShell);
@@ -95,12 +98,12 @@ public class HiveCmdBuilder {
                 buf.append(";exit $ret_code");
             } finally {
                 if (tmpHqlPath != null && logger.isDebugEnabled()) {
-                    logger.debug("The SQL to execute in beeline: \n" + hql);
+                    logger.debug("The SQL to execute in beeline: {} \n", hql);
                 }
             }
             break;
         default:
-            throw new RuntimeException("Hive client cannot be recognized: " + clientMode);
+            throw new IllegalArgumentException("Hive client cannot be recognized: " + clientMode);
         }
 
         return buf.toString();
@@ -133,6 +136,10 @@ public class HiveCmdBuilder {
 
     public void addStatement(String statement) {
         statements.add(statement);
+    }
+
+    public List<String> getStatements() {
+        return statements;
     }
 
     public void addStatements(String[] stats) {
